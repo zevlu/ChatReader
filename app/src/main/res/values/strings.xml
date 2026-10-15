@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">ChatReader</string>
+    <string name="accessibility_service_description">讀取 Messenger 聊天內容，用於產生推薦回覆（測試版）</string>
+</resources>
