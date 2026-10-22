@@ -1,6 +1,10 @@
 package com.example.chatreader
 
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
@@ -64,6 +68,11 @@ class MainActivity : AppCompatActivity() {
             text = "測試 AI 連線"
             setOnClickListener { testAi(this) }
         }
+        // M4：確認學校的模型收得到圖片（App 自己畫一張測試圖送出去）
+        val testVision = Button(this).apply {
+            text = "測試 AI 看圖"
+            setOnClickListener { testVision(this) }
+        }
         agentLog = TextView(this).apply {
             textSize = 13f
             setTextIsSelectable(true)
@@ -90,7 +99,11 @@ class MainActivity : AppCompatActivity() {
                 orientation = LinearLayout.HORIZONTAL
                 addView(openMessenger)
                 addView(stop)
+            })
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
                 addView(testAi)
+                addView(testVision)
             })
             addView(agentLog)
             addView(status)
@@ -158,6 +171,49 @@ class MainActivity : AppCompatActivity() {
                 button.isEnabled = true
             }
         }.start()
+    }
+
+    /**
+     * M4：畫一張「考卷 100 分」的測試圖，請 AI 描述，確認 iAI Hub 收得到圖片。
+     * 成功會回一句描述；失敗時把錯誤訊息和 Logcat（tag:LlmClient）給 Claude 看。
+     */
+    private fun testVision(button: Button) {
+        button.isEnabled = false
+        agentLog.text = "【測試 AI 看圖】呼叫中…（測試圖：一張寫著 100 分的考卷）"
+        Thread {
+            val t0 = System.currentTimeMillis()
+            val result = try {
+                val b64 = LlmClient.encodeJpeg(drawTestImage())
+                val answer = LlmClient.chatWithImages(
+                    "你是看圖助手，用一句繁體中文描述圖片內容，20 字以內。",
+                    "這張圖片裡有什麼？",
+                    listOf(b64),
+                )
+                val sec = (System.currentTimeMillis() - t0) / 1000.0
+                "✅ 成功（${"%.1f".format(sec)} 秒）\nAI 看到：$answer\n\n（有提到考卷或 100 分，就代表看得到圖片）"
+            } catch (e: Exception) {
+                "❌ 失敗：${e.message}\n（Logcat 搜尋 tag:LlmClient 看詳細，把錯誤貼給 Claude）"
+            }
+            runOnUiThread {
+                agentLog.text = "【測試 AI 看圖】\n$result"
+                button.isEnabled = true
+            }
+        }.start()
+    }
+
+    /** 畫一張簡單的測試圖：白底、紅色的「100」、下面寫「數學考卷」 */
+    private fun drawTestImage(): Bitmap {
+        val bmp = Bitmap.createBitmap(480, 360, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        paint.color = Color.RED
+        paint.textSize = 160f
+        c.drawText("100", 240f, 200f, paint)
+        paint.color = Color.BLACK
+        paint.textSize = 48f
+        c.drawText("數學考卷", 240f, 300f, paint)
+        return bmp
     }
 
     private fun describe(s: Suggestion): String = buildString {

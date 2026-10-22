@@ -2,14 +2,17 @@ package com.example.chatreader
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Display
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -19,6 +22,8 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * 共用核心：操作 Messenger 的 Agent — v3（M2）
@@ -277,12 +282,17 @@ object MessengerAgent {
         val snapshot = MessengerParser.parse(root, screen.width())
         if (snapshot.messages.isEmpty()) throw FailException("這個聊天室畫面上沒有讀到訊息")
         val chatText = snapshot.messages.joinToString("\n") { "${it.speaker}：${it.text}" }
-        report("讀到 ${snapshot.messages.size} 則訊息，交給 AI 判斷…（約 2～3 秒）")
+
+        // M4：畫面上有圖片訊息 → 截圖、只裁出圖片範圍（最近 2 張）
+        val images = captureImages(service, snapshot)
+        report("讀到 ${snapshot.messages.size} 則訊息" +
+            (if (images.isNotEmpty()) "、${images.size} 張圖片" else "") +
+            "，交給 AI 判斷…（約 2～5 秒）")
 
         // 問 AI
         val t0 = System.currentTimeMillis()
         val sug = try {
-            advisor.suggest(chatText)
+            if (images.isEmpty()) advisor.suggest(chatText) else advisor.suggestWithImages(chatText, images)
         } catch (e: LlmException) {
             throw FailException("AI 呼叫失敗：${e.message}")
         }
@@ -306,6 +316,76 @@ object MessengerAgent {
                 onCancel = { finish("已取消，沒有填入任何文字") },
             )
         }
+    }
+
+    // ───────────────────────── M4：圖片訊息截圖 ─────────────────────────
+
+    /** 最多送幾張圖片給 AI（越多越慢） */
+    private const val MAX_IMAGES = 2
+
+    /**
+     * 截一張畫面，裁出最近 MAX_IMAGES 張圖片訊息的範圍，回傳 JPEG base64（順序和聊天紀錄裡的「[圖片]」一致）。
+     * Android 11 以下、截圖失敗或畫面上沒有圖片時回傳空清單（照樣只用文字判斷，不會失敗）。
+     */
+    private fun captureImages(service: ChatReaderService, snapshot: ChatSnapshot): List<String> {
+        val targets = snapshot.images.takeLast(MAX_IMAGES)
+        if (targets.isEmpty()) return emptyList()
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            report("畫面上有圖片，但截圖需要 Android 11 以上，這次只用文字判斷")
+            return emptyList()
+        }
+        report("看到 ${targets.size} 張圖片，截圖給 AI 看…")
+
+        // 懸浮窗可能蓋住圖片：截圖前先藏起來，截完再顯示
+        main.post { overlay?.setVisible(false) }
+        val shot = try {
+            sleep(350)
+            takeScreenshotSync(service) ?: run { sleep(1000); takeScreenshotSync(service) }   // 太頻繁會失敗，等一下再試一次
+        } finally {
+            main.post { overlay?.setVisible(true) }
+        }
+        if (shot == null) {
+            report("截圖失敗，這次只用文字判斷")
+            return emptyList()
+        }
+
+        val out = mutableListOf<String>()
+        for (img in targets) {
+            val r = Rect(img.bounds)
+            if (!r.intersect(0, 0, shot.width, shot.height)) continue
+            if (r.width() < 40 || r.height() < 40) continue   // 太小（例如只露出一角）就略過
+            val crop = Bitmap.createBitmap(shot, r.left, r.top, r.width(), r.height())
+            out.add(LlmClient.encodeJpeg(crop))
+        }
+        Log.i(TAG, "M4：截到 ${out.size} 張圖片")
+        return out
+    }
+
+    /** 用無障礙服務截圖（Android 11 以上），最多等 3 秒；失敗回傳 null */
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.R)
+    private fun takeScreenshotSync(service: AccessibilityService): Bitmap? {
+        val latch = CountDownLatch(1)
+        var result: Bitmap? = null
+        service.takeScreenshot(
+            Display.DEFAULT_DISPLAY,
+            service.mainExecutor,
+            object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(shot: AccessibilityService.ScreenshotResult) {
+                    val hw = Bitmap.wrapHardwareBuffer(shot.hardwareBuffer, shot.colorSpace)
+                    result = hw?.copy(Bitmap.Config.ARGB_8888, false)
+                    shot.hardwareBuffer.close()
+                    latch.countDown()
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    // 3 = 呼叫太頻繁（讀取服務剛截過圖）
+                    Log.w(TAG, "M4 截圖失敗 errorCode=$errorCode")
+                    latch.countDown()
+                }
+            },
+        )
+        latch.await(3, TimeUnit.SECONDS)
+        return result
     }
 
     // ───────────────────────── 行車助理：Google 地圖確認導航 ─────────────────────────
@@ -1144,6 +1224,11 @@ private class AgentOverlay(private val service: AccessibilityService) {
         btnYes.text = "送出"
         btnYes.visibility = View.VISIBLE
         btnYes.setOnClickListener { onSend() }
+    }
+
+    /** M4：截圖前暫時藏起來（不移除，位置不變） */
+    fun setVisible(visible: Boolean) {
+        panel.visibility = if (visible) View.VISIBLE else View.INVISIBLE
     }
 
     fun hide() {

@@ -5,7 +5,9 @@ import android.util.Log
 /**
  * 交友大師專用：判斷對方情緒，產生三種語氣的回覆。
  * 提示詞與 JSON 格式見專案知識「09_提示詞與JSON格式.md」。
- * v3（2026-10-22）：只回最新的訊息（舊話題只當背景）；對方問問題或要推薦時，三則都要真的回答。
+ * v3（2026-10-22 定案）：只回最新的訊息（舊話題只當背景）；對方問問題或要推薦時，三則都要真的回答。
+ * v3.1（2026-10-22）：加一行貼圖說明「[貼圖：…]」的解讀規則。
+ * M4（2026-10-22，測試中）：有圖片時改用 suggestWithImages，提示詞後面追加 IMAGE_RULES。
  * 修改提示詞前，先用 prompt_test.ps1 在電腦上測過。
  */
 object FriendAdvisor : ReplyAdvisor {
@@ -24,6 +26,7 @@ object FriendAdvisor : ReplyAdvisor {
         你是「交友大師」，幫使用者回覆 Messenger 上朋友的訊息。
 
         【輸入】最近的聊天紀錄。「我」是使用者，「對方」是朋友。「[圖片]」代表一張圖片。
+        「[貼圖：…]」是對方傳的貼圖，冒號後面是貼圖的說明（可能是英文），代表對方想用貼圖表達的情緒或動作，請把它當成對方說的話來判斷。
         最後會附上【現在要回的訊息】：你的情緒判斷和回覆都以它為主。更早的訊息只當背景；話題已經換了，就不要再提舊話題裡的事（例如之前的約、地點、行程）。
 
         【任務】
@@ -66,8 +69,30 @@ object FriendAdvisor : ReplyAdvisor {
         return lines.joinToString("\n") + "\n\n【現在要回的訊息】\n" + focus
     }
 
-    override fun suggest(chatText: String): Suggestion {
-        val content = LlmClient.chat(SYSTEM_PROMPT, withFocus(chatText))
+    /** M4：有圖片時追加在系統提示詞後面的規則 */
+    private val IMAGE_RULES = """
+
+        【圖片】
+        - 這次另外附上聊天裡最近的圖片，依序對應聊天紀錄中的「[圖片1]」「[圖片2]」…。
+        - 先看懂圖片內容（照片的場景、人的表情、貼圖或梗圖想表達的情緒、圖片裡的文字），把它納入情緒判斷。
+        - reason 裡用一句話提到圖片內容，例如「對方傳了考卷 100 分的照片，很開心」。
+        - 回覆可以提到圖片裡的東西，讓人感覺你真的有看圖；看不清楚或不確定的就不要亂猜，也不要描述得太細。
+    """.trimIndent()
+
+    override fun suggest(chatText: String): Suggestion =
+        parse(LlmClient.chat(SYSTEM_PROMPT, withFocus(chatText)))
+
+    /** M4：把最後幾個「[圖片]」編號成「[圖片1]」「[圖片2]」…，和送出的圖片一一對應 */
+    override fun suggestWithImages(chatText: String, images: List<String>): Suggestion {
+        if (images.isEmpty()) return suggest(chatText)
+        val lines = chatText.lines().toMutableList()
+        val idx = lines.indices.filter { lines[it].endsWith("：[圖片]") }.takeLast(images.size)
+        idx.forEachIndexed { k, i -> lines[i] = lines[i].replace("[圖片]", "[圖片${k + 1}]") }
+        val text = withFocus(lines.joinToString("\n"))
+        return parse(LlmClient.chatWithImages(SYSTEM_PROMPT + "\n" + IMAGE_RULES, text, images))
+    }
+
+    private fun parse(content: String): Suggestion {
         Log.i("FriendAdvisor", "原始回覆：$content")
         val o = LlmClient.extractJson(content)
         val arr = o.optJSONArray("replies") ?: throw LlmException("AI 回覆少了 replies")

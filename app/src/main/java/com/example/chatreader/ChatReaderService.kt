@@ -24,6 +24,10 @@ import java.io.FileOutputStream
  *    - latest_tree.txt：完整節點樹（Messenger 改版、讀不到時拿來比對）
  *    - latest.png：截圖（Android 11 以上）
  * 4. 只讀取，不會對 Messenger 做任何操作，也不會送出訊息
+ * 5. M4（2026-10-22）：圖片訊息除了輸出「[圖片]」，也記下它在螢幕上的位置（ChatSnapshot.images），
+ *    讓 MessengerAgent 截圖時只裁出圖片範圍交給 AI
+ * 6. 貼圖（2026-10-22 Galaxy A55 實測）：Button，desc =「已收到貼圖訊息，<Messenger 附的英文說明>」
+ *    → 輸出「[貼圖：說明]」直接給 AI 看；沒有說明的貼圖才當成圖片截圖
  *
  * 看 Log：Android Studio 的 Logcat 搜尋 tag:ChatReader
  */
@@ -162,12 +166,19 @@ data class ChatMessage(
     val speaker: String get() = if (fromMe) "我" else "對方"
 }
 
+/** 一張圖片訊息在螢幕上的位置（M4：截圖時用來裁切） */
+data class ChatImage(
+    val bounds: Rect,     // 在螢幕上的範圍
+    val fromMe: Boolean,  // true = 我傳的，false = 對方傳的
+)
+
 /** 一次讀取的結果 */
 data class ChatSnapshot(
     val partnerName: String?,      // 標題列的對方全名，讀不到時為 null
     val messages: List<ChatMessage>,
     val inputFound: Boolean,       // 有沒有找到輸入框
     val draft: String?,            // 輸入框裡使用者正在打的字（沒有則為 null）
+    val images: List<ChatImage> = emptyList(),   // 畫面上的圖片訊息，由上到下（M4）
 )
 
 /** 依節點規則解析 Messenger 聊天室畫面。只讀取，不做任何操作。 */
@@ -179,6 +190,9 @@ object MessengerParser {
     /** 圖片訊息的 contentDescription 關鍵字（例如「已收到相片訊息」） */
     private const val PHOTO_MARK = "相片訊息"
 
+    /** 貼圖訊息的 contentDescription 關鍵字（例如「已收到貼圖訊息，Polar bear …」） */
+    private const val STICKER_MARK = "貼圖訊息"
+
     /** 標題列按鈕的 contentDescription 結尾：「<對方全名>, 對話串詳情」 */
     private const val TITLE_SUFFIX = ", 對話串詳情"
 
@@ -187,6 +201,7 @@ object MessengerParser {
 
     fun parse(root: AccessibilityNodeInfo, screenWidth: Int): ChatSnapshot {
         val messages = mutableListOf<ChatMessage>()
+        val images = mutableListOf<ChatImage>()
         val seen = HashSet<String>()
         var partner: String? = null
         var inputFound = false
@@ -219,11 +234,29 @@ object MessengerParser {
                     }
                 }
 
+                // 貼圖訊息：Button，contentDescription =「已收到貼圖訊息，<英文說明>」
+                desc != null && desc.contains(STICKER_MARK) &&
+                    node.className?.toString()?.endsWith("Button") == true -> {
+                    if (seen.add("${r.toShortString()}|sticker")) {
+                        val me = isFromMe(r, screenWidth)
+                        val about = desc.substringAfter(STICKER_MARK).trimStart('，', ',', ' ').trim()
+                        if (about.isNotEmpty()) {
+                            messages.add(ChatMessage(me, "", "[貼圖：$about]", r.top))
+                        } else {
+                            // 沒有說明的貼圖：當成圖片，讓 M4 截圖給 AI 看
+                            messages.add(ChatMessage(me, "", "[圖片]", r.top))
+                            images.add(ChatImage(Rect(r), me))
+                        }
+                    }
+                }
+
                 // 圖片訊息：Button，contentDescription 含「相片訊息」
                 desc != null && desc.contains(PHOTO_MARK) &&
-                        node.className?.toString()?.endsWith("Button") == true -> {
+                    node.className?.toString()?.endsWith("Button") == true -> {
                     if (seen.add("${r.toShortString()}|photo")) {
-                        messages.add(ChatMessage(isFromMe(r, screenWidth), "", "[圖片]", r.top))
+                        val me = isFromMe(r, screenWidth)
+                        messages.add(ChatMessage(me, "", "[圖片]", r.top))
+                        images.add(ChatImage(Rect(r), me))
                     }
                 }
             }
@@ -234,7 +267,10 @@ object MessengerParser {
         visit(root)
 
         val recent = messages.sortedBy { it.top }.takeLast(MAX_MESSAGES)
-        return ChatSnapshot(partner, recent, inputFound, draft)
+        // 只留在「最近幾則」範圍內的圖片，順序和 messages 裡的「[圖片]」一致
+        val firstTop = recent.firstOrNull()?.top ?: Int.MAX_VALUE
+        val recentImages = images.filter { it.bounds.top >= firstTop }.sortedBy { it.bounds.top }
+        return ChatSnapshot(partner, recent, inputFound, draft, recentImages)
     }
 
     /** 「澤, 內容，點按兩下可查看…」→ ChatMessage；內容是空的就回傳 null */

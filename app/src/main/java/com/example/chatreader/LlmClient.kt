@@ -1,8 +1,11 @@
 package com.example.chatreader
 
+import android.graphics.Bitmap
+import android.util.Base64
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -16,6 +19,9 @@ import java.net.UnknownHostException
  *   IAI_KEY=你的金鑰
  *
  * 一定要在背景執行緒呼叫（會連網路）。
+ *
+ * M4（2026-10-22）：加上 chatWithImages()，可以連同圖片一起送（OpenAI 相容的 image_url 格式，
+ * 圖片用 data:image/jpeg;base64,… 內嵌）。
  */
 
 /** 一則推薦回覆 */
@@ -33,6 +39,12 @@ data class Suggestion(
 /** 由各個 App（flavor）自己實作：給聊天紀錄，回傳建議。交友大師的實作是 FriendAdvisor。 */
 interface ReplyAdvisor {
     fun suggest(chatText: String): Suggestion
+
+    /**
+     * M4：連同聊天裡的圖片一起判斷。images = JPEG 的 base64 字串，順序和聊天紀錄裡的「[圖片]」一致。
+     * 沒有實作看圖的 advisor 會直接忽略圖片。
+     */
+    fun suggestWithImages(chatText: String, images: List<String>): Suggestion = suggest(chatText)
 }
 
 class LlmException(msg: String) : Exception(msg)
@@ -47,7 +59,47 @@ object LlmClient {
      * 送出一次對話，回傳 AI 的回答（已去掉頭尾空白）。
      * thinking = false 會關閉「先思考再回答」，實測約 2 秒（開啟約 5～12 秒）。
      */
-    fun chat(system: String, user: String, temperature: Double = 0.7, thinking: Boolean = false): String {
+    fun chat(system: String, user: String, temperature: Double = 0.7, thinking: Boolean = false): String =
+        post(system, user, temperature, thinking, readTimeoutMs = 30_000)
+
+    /**
+     * M4：文字＋圖片一起送。images = JPEG 的 base64 字串（不含 data: 開頭），可以是空的。
+     * 圖片比較大，等待時間放寬到 60 秒。
+     */
+    fun chatWithImages(
+        system: String,
+        user: String,
+        images: List<String>,
+        temperature: Double = 0.7,
+        thinking: Boolean = false,
+    ): String {
+        if (images.isEmpty()) return chat(system, user, temperature, thinking)
+        val content = JSONArray().apply {
+            put(JSONObject().put("type", "text").put("text", user))
+            images.forEach { b64 ->
+                put(JSONObject().put("type", "image_url").put(
+                    "image_url", JSONObject().put("url", "data:image/jpeg;base64,$b64")
+                ))
+            }
+        }
+        Log.i(TAG, "連同 ${images.size} 張圖片送出（共約 ${images.sumOf { it.length } / 1024} KB）")
+        return post(system, content, temperature, thinking, readTimeoutMs = 60_000)
+    }
+
+    /** 把圖片縮到最長邊 maxSide 以內，存成 JPEG，回傳 base64（不含 data: 開頭） */
+    fun encodeJpeg(bmp: Bitmap, maxSide: Int = 768, quality: Int = 80): String {
+        val longest = maxOf(bmp.width, bmp.height)
+        val scaled = if (longest > maxSide) {
+            val k = maxSide.toFloat() / longest
+            Bitmap.createScaledBitmap(bmp, (bmp.width * k).toInt().coerceAtLeast(1), (bmp.height * k).toInt().coerceAtLeast(1), true)
+        } else bmp
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
+        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    }
+
+    /** userContent 可以是字串（只有文字）或 JSONArray（文字＋圖片） */
+    private fun post(system: String, userContent: Any, temperature: Double, thinking: Boolean, readTimeoutMs: Int): String {
         if (!isConfigured()) {
             throw LlmException("沒有設定 IAI_BASE／IAI_KEY：請在 local.properties 加上後按 Sync，再重新安裝")
         }
@@ -56,7 +108,7 @@ object LlmClient {
             put("temperature", temperature)
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", system))
-                put(JSONObject().put("role", "user").put("content", user))
+                put(JSONObject().put("role", "user").put("content", userContent))
             })
             if (!thinking) put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
         }
@@ -66,7 +118,7 @@ object LlmClient {
         try {
             conn.requestMethod = "POST"
             conn.connectTimeout = 10_000
-            conn.readTimeout = 30_000
+            conn.readTimeout = readTimeoutMs
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
             conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.IAI_KEY}")
@@ -75,7 +127,10 @@ object LlmClient {
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
-            if (code !in 200..299) throw LlmException("伺服器回應 HTTP $code：${text.take(300)}")
+            if (code !in 200..299) {
+                Log.w(TAG, "HTTP $code：$text")
+                throw LlmException("伺服器回應 HTTP $code：${text.take(300)}")
+            }
 
             val content = JSONObject(text)
                 .getJSONArray("choices").getJSONObject(0)
@@ -86,7 +141,7 @@ object LlmClient {
         } catch (e: UnknownHostException) {
             throw LlmException("連不到伺服器 ${url.host}，請檢查網路")
         } catch (e: SocketTimeoutException) {
-            throw LlmException("連線逾時（超過 30 秒）")
+            throw LlmException("連線逾時（超過 ${readTimeoutMs / 1000} 秒）")
         } finally {
             conn.disconnect()
         }
