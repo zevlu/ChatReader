@@ -59,6 +59,15 @@ object CommandParser {
     }
 }
 
+/** Google 地圖路線預覽讀到的資訊（行車助理用） */
+data class RouteInfo(
+    val summary: String,      // 例如「16 分鐘 (15 公里)」
+    val minutes: Int?,        // 車程分鐘數
+    val toll: Boolean,        // 有沒有收費路段
+    val arrival: String?,     // 預計抵達時間 HH:mm
+    val lateMinutes: Int?,    // 比約定晚幾分鐘；沒有約定時間或不會遲到為 null
+)
+
 object MessengerAgent {
     private const val TAG = "MessengerAgent"
     private const val PKG = "com.facebook.orca"
@@ -69,15 +78,21 @@ object MessengerAgent {
     private const val MAX_SCROLLS = 6              // 聊天列表最多往下捲幾次
     private const val MAX_RELAUNCH = 2             // 離開 Messenger 最多重開幾次
     private const val HUMAN_WAIT_MS = 15_000L      // 不認識的畫面，等使用者手動處理多久
+    private const val MAPS_PKG = "com.google.android.apps.maps"
+    /** Google 地圖路線預覽的「開始」鍵（依 2026/10/19 手機截圖；讀不到時看 maps_fail.txt） */
+    private val MAPS_START_WORDS = setOf("開始", "開始導航", "Start")
 
     /** 跳出視窗常見的「關掉」按鈕文字（只在不認識的畫面才會用到，完全相等才算） */
     private val DISMISS_WORDS = setOf(
-        "稍後再說", "以後再說", "不用了", "不用，謝謝", "略過", "跳過", "關閉", "取消", "不允許",
+        "稍後再說", "以後再說", "不用了", "不用，謝謝", "不用了，謝謝", "略過", "跳過", "關閉", "取消", "不允許",
         "Not now", "Not Now", "Skip", "Close", "Cancel",
     )
 
     /** 進度回報給畫面（在主執行緒呼叫） */
     var onStatus: ((String) -> Unit)? = null
+
+    /** 地圖列出好幾家（例如「加油站」）時，把第一家的店名交給 CarMate，讓它用這個店名重新規劃路線 */
+    var onPlaceList: ((String) -> Unit)? = null
 
     /** 這次任務的所有進度紀錄（只在主執行緒修改） */
     val history = mutableListOf<String>()
@@ -126,6 +141,70 @@ object MessengerAgent {
     /** startRead 的回呼（只在主執行緒存取） */
     private var pendingRead: ((ChatSnapshot?) -> Unit)? = null
 
+    /**
+     * 行車助理：Google 地圖打開路線預覽後，讀出車程、算出會不會遲到，
+     * 用懸浮窗問使用者要不要開始導航；使用者按了才幫他按「開始」。
+     * @param apptHHmm 約定時間（HH:mm），空字串代表不知道
+     * @param onReady 讀到路線時呼叫（主執行緒），可以用來唸出路線
+     * @param onDone 結束時呼叫（主執行緒）：choice 0 = 沒開始導航／失敗，1 = 已開始導航，2 = 已開始導航且要通知朋友
+     */
+    fun startRoute(
+        apptHHmm: String,
+        friend: String,
+        onReady: (RouteInfo) -> Unit,
+        onDone: (RouteInfo?, Int) -> Unit,
+    ): Boolean {
+        if (busy) {
+            report("⚠️ 上一個任務還沒結束，請先按停止")
+            return false
+        }
+        routeResult = null
+        routeChoice = 0
+        pendingRoute = onDone
+        val ok = launch { service -> runRoute(service, apptHHmm.trim(), friend.trim(), onReady) }
+        if (!ok) pendingRoute = null
+        return ok
+    }
+
+    private var pendingRoute: ((RouteInfo?, Int) -> Unit)? = null   // 只在主執行緒存取
+    @Volatile private var routeResult: RouteInfo? = null
+    @Volatile private var routeChoice = 0
+
+    /**
+     * 懸浮窗出現需要使用者回答的問題時通知（主執行緒）。
+     * kind：「confirm」= 要不要送出訊息、「route」= 要不要開始導航。行車助理用它改成語音回答。
+     */
+    var onAsk: ((kind: String, text: String, options: List<String>) -> Unit)? = null
+
+    // 目前懸浮窗問題的答案（只在主執行緒存取）
+    private var answerYes: (() -> Unit)? = null
+    private var answerAlt: (() -> Unit)? = null
+    private var answerNo: (() -> Unit)? = null
+
+    private fun setAnswers(yes: () -> Unit, alt: (() -> Unit)?, no: () -> Unit) {
+        answerYes = yes; answerAlt = alt; answerNo = no
+    }
+
+    private fun clearAnswers() {
+        answerYes = null; answerAlt = null; answerNo = null
+    }
+
+    /**
+     * 用語音回答目前懸浮窗的問題（從主執行緒呼叫），效果和使用者按按鈕一樣。
+     * @param choice 0 = 是／第一個選項，1 = 第二個選項，-1 = 取消
+     * @return false 代表目前沒有這個選項可以回答
+     */
+    fun respond(choice: Int): Boolean {
+        val f = when (choice) {
+            0 -> answerYes
+            1 -> answerAlt
+            else -> answerNo
+        } ?: return false
+        clearAnswers()
+        f()
+        return true
+    }
+
     /** 停止任務（任何時候都可以按） */
     fun cancel() {
         if (!busy) return
@@ -145,6 +224,7 @@ object MessengerAgent {
         }
         busy = true
         cancelled = false
+        clearAnswers()
         history.clear()
         overlay?.hide()
         overlay = AgentOverlay(service).also {
@@ -228,6 +308,258 @@ object MessengerAgent {
         }
     }
 
+    // ───────────────────────── 行車助理：Google 地圖確認導航 ─────────────────────────
+
+    private fun runRoute(service: ChatReaderService, appt: String, friend: String, onReady: (RouteInfo) -> Unit) {
+        report("① 等待 Google 地圖開啟…")
+        if (!waitFor(10_000) { root(service)?.packageName?.toString() == MAPS_PKG }) {
+            throw FailException("等了 10 秒還沒看到 Google 地圖")
+        }
+        report("② 等路線規劃好…")
+        var noOriginSince = 0L
+        var picks = 0
+        var relaunched = false
+        val ready = waitFor(30_000) {
+            val r = root(service)
+            if (r != null && findMapsStart(r) == null) {
+                dismissPopup(r)
+                // 不小心開到「在路線中新增停靠點」面板：按返回關掉，回到路線預覽
+                if (findNode(r) { n -> n.text?.toString()?.trim() == "在路線中新增停靠點" } != null) {
+                    report("關掉「新增停靠點」面板，回到路線")
+                    service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK)
+                    Thread.sleep(1500)
+                } else if (!relaunched) {
+                    // 目的地或停靠點是「加油站」這種類別時，地圖會先列出好幾家讓你選：
+                    // 讀出第一家的店名，請 CarMate 用店名重新規劃（不用在地圖上點來點去）
+                    val first = firstListedPlace(r)
+                    if (first != null && onPlaceList != null) {
+                        relaunched = true
+                        report("地圖列出好幾家，選第一家：$first")
+                        main.post { onPlaceList?.invoke(first) }
+                        Thread.sleep(3000)
+                    } else if (picks < 1 && pickFirstPlace(r)) {
+                        picks++
+                    }
+                }
+                // 起點欄是空的「選擇起點」：手機定位沒開，地圖不會出現「開始」鍵
+                if (findNode(r) { n -> n.text?.toString()?.trim() == "選擇起點" } != null) {
+                    if (noOriginSince == 0L) noOriginSince = System.currentTimeMillis()
+                    else if (System.currentTimeMillis() - noOriginSince > 4000) {
+                        throw FailException("地圖找不到你的位置（起點是空的）。請打開手機的「位置」再試一次")
+                    }
+                } else noOriginSince = 0L
+            }
+            r != null && findMapsStart(r) != null
+        }
+        if (!ready) {
+            root(service)?.let { dumpTree(service, it, "maps_fail.txt") }
+            throw FailException("沒看到地圖的「開始」鍵（已存 maps_fail.txt），請自己按開始")
+        }
+        sleep(1000)   // 等車程數字穩定
+        val root = root(service) ?: throw FailException("讀不到地圖畫面")
+        val info = readRoute(root, appt)
+        routeResult = info
+        report("③ 路線：${info.summary}，預計 ${info.arrival ?: "?"} 到" +
+            (info.lateMinutes?.let { "，比約定晚 $it 分鐘" } ?: ""))
+        main.post { onReady(info) }
+
+        val header = buildString {
+            append("🧭 ").append(info.summary)
+            if (info.toll) append("・有收費路段")
+            info.arrival?.let { append("\n預計 ").append(it).append(" 抵達") }
+            info.lateMinutes?.let { append("\n⚠️ 會比約定的 ").append(appt).append(" 晚約 ").append(it).append(" 分鐘") }
+            append("\n\n要開始導航嗎？")
+        }
+        val notifyLabel = info.lateMinutes?.takeIf { friend.isNotEmpty() }
+            ?.let { "▶ 開始導航，並通知「$friend」我會晚 $it 分鐘" }
+        val options = listOfNotNull("▶ 開始導航", notifyLabel)
+        main.post {
+            val pick: (Int) -> Unit = { i ->
+                overlay?.showRunning("幫你按「開始」…", null)
+                Thread({ guarded { pressMapsStart(service, if (i == 1) 2 else 1) } }, "MapsStart").start()
+            }
+            val cancel: () -> Unit = { finish("好，先不導航（路線還留在地圖上）") }
+            val alt: (() -> Unit)? = notifyLabel?.let { { pick(1) } }
+            setAnswers({ pick(0) }, alt, cancel)
+            overlay?.showChoices(
+                header, options,
+                onPick = { i -> clearAnswers(); pick(i) },
+                onCancel = { clearAnswers(); cancel() },
+            )
+            onAsk?.invoke("route", header, options)
+        }
+    }
+
+    private fun pressMapsStart(service: ChatReaderService, choice: Int) {
+        val root = root(service) ?: throw FailException("讀不到地圖畫面")
+        if (root.packageName?.toString() != MAPS_PKG) throw FailException("畫面已經不是 Google 地圖")
+        val start = findMapsStart(root) ?: run {
+            dumpTree(service, root, "maps_fail.txt")
+            throw FailException("找不到「開始」鍵（已存 maps_fail.txt），請自己按開始")
+        }
+        if (!start.performAction(AccessibilityNodeInfo.ACTION_CLICK)) throw FailException("按「開始」失敗，請自己按")
+        routeChoice = choice
+        finish("✅ 已開始導航")
+    }
+
+    /** 擋住地圖的彈出視窗（例如「定位精確度」）：只按「不用了」這類，不碰地圖自己的關閉／取消 */
+    private val POPUP_DISMISS = setOf("不用了，謝謝", "不用，謝謝", "不用了", "稍後再說", "以後再說", "略過", "No thanks", "Not now")
+
+    /**
+     * 地圖列出多個地點（例如搜尋「加油站」）時，按第一家的「新增停靠點」或「路線」，
+     * 地圖就會回到路線預覽、出現「開始」鍵。有按到回傳 true。
+     */
+    private val PLACE_PICK = listOf("新增停靠點", "Add stop", "路線", "Directions")
+
+    private fun pickFirstPlace(root: AccessibilityNodeInfo): Boolean {
+        for (word in PLACE_PICK) {
+            val hits = collect(root) { n ->
+                listOfNotNull(n.text?.toString(), n.contentDescription?.toString()).any { it.trim() == word }
+            }
+            // 至少兩個一樣的按鈕才是「地點列表」；只有一個可能是路線畫面上的選項，不要亂按
+            if (hits.size < 2) continue
+            val hit = hits.first()
+            var cur: AccessibilityNodeInfo? = hit
+            repeat(4) {
+                val c = cur ?: return@repeat
+                if (c.isClickable) {
+                    val name = placeTitleNear(c)
+                    report("地圖列出好幾個地點，幫你選第一個${name?.let { "：$it" } ?: ""}")
+                    c.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    Thread.sleep(2500)
+                    return true
+                }
+                cur = c.parent
+            }
+        }
+        return false
+    }
+
+    /**
+     * 地點列表的第一家店名。列表每一筆都有「xx 公里」那一行，至少兩筆才算列表；
+     * 從第一個「公里」往前找，跳過評分、評論數、類別，第一個像名字的就是店名。
+     */
+    private fun firstListedPlace(root: AccessibilityNodeInfo): String? {
+        val texts = collect(root) { !it.text.isNullOrBlank() }.map { it.text.toString().trim() }
+        val distIdx = texts.indices.filter { texts[it].contains("公里") || texts[it].matches(Regex(""".*\d+\s*(m|km|公尺)$""")) }
+        if (distIdx.size < 2) return null
+        for (i in distIdx.first() - 1 downTo maxOf(0, distIdx.first() - 6)) {
+            val t = texts[i]
+            if (t.length < 4) continue
+            if (t.startsWith("·") || t.startsWith("(") || t.contains("★") || t.contains("營業") || t.contains("打烊")) continue
+            if (t.matches(Regex("""^[\d.,\s()]+$"""))) continue
+            if (t == "加油站" || t in PLACE_PICK) continue
+            return t
+        }
+        return null
+    }
+
+    /** 找按鈕所在那一筆的店名（往上找幾層，拿第一段像名稱的文字） */
+    private fun placeTitleNear(button: AccessibilityNodeInfo): String? {
+        var p: AccessibilityNodeInfo? = button.parent
+        repeat(4) {
+            val x = p ?: return null
+            val t = findNode(x) { n ->
+                val s = n.text?.toString()?.trim() ?: return@findNode false
+                s.length in 3..30 && s !in PLACE_PICK && s !in setOf("致電", "分享", "儲存") && !s.contains("★") && !s.contains("公里")
+            }?.text?.toString()
+            if (t != null) return t
+            p = x.parent
+        }
+        return null
+    }
+
+    /** 「要開啟裝置定位嗎？」這種視窗要按同意：沒有定位，地圖就沒有起點、無法導航 */
+    private val POPUP_ACCEPT = setOf("開啟", "開啟定位", "確定", "OK", "Turn on")
+    private val LOCATION_WORDS = listOf("定位", "位置資訊", "裝置位置", "location", "Location")
+
+    private fun dismissPopup(root: AccessibilityNodeInfo) {
+        val hit = findNode(root) { n ->
+            listOfNotNull(n.text?.toString(), n.contentDescription?.toString()).any { it.trim() in POPUP_DISMISS }
+        } ?: return
+        // 有「不用了」才代表真的有彈出視窗；如果是在問定位，改按「開啟」
+        val aboutLocation = findNode(root) { n ->
+            val t = n.text?.toString() ?: return@findNode false
+            t.length > 4 && LOCATION_WORDS.any { t.contains(it) }
+        } != null
+        if (aboutLocation) {
+            val ok = findNode(root) { n ->
+                listOfNotNull(n.text?.toString(), n.contentDescription?.toString()).any { it.trim() in POPUP_ACCEPT }
+            }
+            var c: AccessibilityNodeInfo? = ok
+            repeat(6) {
+                val x = c ?: return@repeat
+                if (x.isClickable) {
+                    report("地圖需要定位，幫你按「${labelOf(x)}」開啟定位")
+                    x.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    Thread.sleep(2000)
+                    return
+                }
+                c = x.parent
+            }
+        }
+        var cur: AccessibilityNodeInfo? = hit
+        repeat(6) {
+            val c = cur ?: return
+            if (c.isClickable) {
+                report("有彈出視窗擋住地圖，幫你按「${labelOf(c)}」")
+                c.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                Thread.sleep(1200)
+                return
+            }
+            cur = c.parent
+        }
+    }
+
+    /** 路線預覽的「開始」鍵：文字或描述是「開始」，回傳可以點的那一層 */
+    private fun findMapsStart(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val hit = findNode(root) { n ->
+            listOfNotNull(n.text?.toString(), n.contentDescription?.toString())
+                .any { it.trim() in MAPS_START_WORDS }
+        } ?: return null
+        var cur: AccessibilityNodeInfo? = hit
+        repeat(6) {
+            val c = cur ?: return null
+            if (c.isClickable) return c
+            cur = c.parent
+        }
+        return null
+    }
+
+    /** 從路線預覽畫面讀出車程，並和約定時間比較 */
+    private fun readRoute(root: AccessibilityNodeInfo, appt: String): RouteInfo {
+        val texts = collect(root) { !it.text.isNullOrBlank() || !it.contentDescription.isNullOrBlank() }
+            .flatMap { listOfNotNull(it.text?.toString(), it.contentDescription?.toString()) }
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        val summary = texts.firstOrNull { it.contains("分鐘") && it.contains("公里") && it.length <= 30 }
+            ?: texts.firstOrNull { (it.contains("分鐘") || it.contains("小時")) && it.length <= 15 }
+            ?: "（讀不到車程）"
+        val minutes = parseMinutes(summary)
+        val toll = texts.any { it.contains("收費") }
+
+        val cal = java.util.Calendar.getInstance()
+        val nowMin = cal.get(java.util.Calendar.HOUR_OF_DAY) * 60 + cal.get(java.util.Calendar.MINUTE)
+        val arrivalMin = minutes?.let { nowMin + it }
+        val arrival = arrivalMin?.let { "%02d:%02d".format((it / 60) % 24, it % 60) }
+
+        var late: Int? = null
+        val m = Regex("""^(\d{1,2}):(\d{2})$""").find(appt)
+        if (m != null && arrivalMin != null) {
+            val apptMin = m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt()
+            // 約定時間已經過了很久（或是明天）就不算遲到
+            if (apptMin >= nowMin - 60) late = (arrivalMin - apptMin).takeIf { it > 0 }
+        }
+        return RouteInfo(summary, minutes, toll, arrival, late)
+    }
+
+    /** 「1 小時 5 分鐘」→ 65；讀不到回傳 null */
+    private fun parseMinutes(s: String): Int? {
+        val h = Regex("""(\d+)\s*小時""").find(s)?.groupValues?.get(1)?.toInt() ?: 0
+        val m = Regex("""(\d+)\s*分鐘""").find(s)?.groupValues?.get(1)?.toInt() ?: 0
+        return if (h == 0 && m == 0) null else h * 60 + m
+    }
+
     // ───────────────────────── 行車助理：只讀取 ─────────────────────────
 
     private fun runRead(service: ChatReaderService, target: String) {
@@ -284,14 +616,18 @@ object MessengerAgent {
             append("要傳給「").append(chatTitle).append("」嗎？\n\n").append(expected)
         }
         main.post {
+            val send: () -> Unit = {
+                overlay?.showRunning("送出中…", null)   // 先鎖住，避免連按兩次
+                Thread({ guarded { runSend(service, expected, chatTitle, allowEdit) } }, "MessengerAgentSend").start()
+            }
+            val cancel: () -> Unit = { finish("已取消：文字留在輸入框，你可以自己修改或送出") }
+            setAnswers(send, null, cancel)
             overlay?.showConfirm(
                 text,
-                onSend = {
-                    overlay?.showRunning("送出中…", null)   // 先鎖住，避免連按兩次
-                    Thread({ guarded { runSend(service, expected, chatTitle, allowEdit) } }, "MessengerAgentSend").start()
-                },
-                onCancel = { finish("已取消：文字留在輸入框，你可以自己修改或送出") },
+                onSend = { clearAnswers(); send() },
+                onCancel = { clearAnswers(); cancel() },
             )
+            onAsk?.invoke("confirm", text, listOf("送出"))
         }
     }
 
@@ -375,6 +711,7 @@ object MessengerAgent {
      */
     private fun navigateToChat(service: ChatReaderService, target: String): String {
         var relaunches = 0
+        var opened: String? = null   // 剛從列表點進去的名字（可能是同音字修正後的）
         repeat(MAX_STEPS) {
             sleep(600)
             val root = root(service) ?: return@repeat
@@ -391,7 +728,7 @@ object MessengerAgent {
 
             val chatTitle = findChatTitle(root)
             when {
-                chatTitle != null && (target.isEmpty() || nameMatches(chatTitle, target)) -> {
+                chatTitle != null && (target.isEmpty() || opened != null || nameMatches(chatTitle, target)) -> {
                     report("③ 已在「$chatTitle」的聊天室")
                     return chatTitle
                 }
@@ -405,9 +742,8 @@ object MessengerAgent {
                         throw FailException("目前在聊天列表，請先打開要回覆的聊天室，或輸入對象名字")
                     }
                     report("② 在聊天列表找「$target」…")
-                    if (!openFromList(service, target)) {
-                        throw FailException("聊天列表裡找不到「$target」（往下捲了 $MAX_SCROLLS 次）")
-                    }
+                    opened = openFromList(service, target)
+                        ?: throw FailException("聊天列表裡找不到「$target」（往下捲了 $MAX_SCROLLS 次）")
                     sleep(1200)
                 }
                 else -> handleUnknownScreen(service, root)
@@ -503,7 +839,8 @@ object MessengerAgent {
         } != null
 
     /** 名稱比對：完全相同，或包含（例如指令說「崇宇」，標題是「簡崇宇」） */
-    private fun nameMatches(name: String, target: String) = name == target || name.contains(target)
+    private fun nameMatches(name: String, target: String) =
+        name == target || name.contains(target) || target.contains(name)   // 標題可能只顯示暱稱（「孟澤」→「澤」）
 
     private fun findEdit(root: AccessibilityNodeInfo) = findNode(root) { it.isEditable }
 
@@ -521,31 +858,57 @@ object MessengerAgent {
     }
 
     /** 在聊天列表找到對象並點進去，找不到就往下捲 */
-    private fun openFromList(service: ChatReaderService, target: String): Boolean {
+    /** 在聊天列表找到對象並點進去，回傳點進去的名字；找不到回傳 null */
+    private fun openFromList(service: ChatReaderService, target: String): String? {
         repeat(MAX_SCROLLS + 1) { i ->
-            val root = root(service) ?: return false
-            val entry = findChatEntry(root, target)
+            val root = root(service) ?: return null
+            var entry = findChatEntry(root, target)
+            // 第一頁找不到：可能是語音辨識的同音錯字（例如「孟則」→「孟澤」），請 AI 從這一頁的名字裡挑
+            if (entry == null && i == 0) entry = guessEntry(root, target)
             if (entry != null) {
-                val name = entry.contentDescription.toString().substringBefore(", ")
+                val name = entry.contentDescription.toString().substringBefore(", ").trim()
                 report("找到「$name」，點進去")
-                return entry.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                return if (entry.performAction(AccessibilityNodeInfo.ACTION_CLICK)) name else null
             }
-            if (i == MAX_SCROLLS) return false
-            val list = findNode(root) { it.isScrollable } ?: return false
-            if (!list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) return false
+            if (i == MAX_SCROLLS) return null
+            val list = findNode(root) { it.isScrollable } ?: return null
+            if (!list.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) return null
             report("這一頁沒有，往下捲（${i + 1}/$MAX_SCROLLS）")
             sleep(900)
         }
-        return false
+        return null
     }
 
-    /** 聊天列表的每一列：可點的 Button，contentDescription =「名稱, 預覽」 */
-    private fun findChatEntry(root: AccessibilityNodeInfo, target: String): AccessibilityNodeInfo? {
-        val entries = collect(root) {
+    private fun chatEntries(root: AccessibilityNodeInfo): List<Pair<AccessibilityNodeInfo, String>> =
+        collect(root) {
             it.isClickable &&
                 it.className?.toString()?.endsWith("Button") == true &&
                 it.contentDescription?.toString()?.contains(", ") == true
         }.map { it to it.contentDescription.toString().substringBefore(", ").trim() }
+
+    /** 請 AI 判斷語音說的名字最像列表上的哪一個（同音字）；沒有像的就回傳 null */
+    private fun guessEntry(root: AccessibilityNodeInfo, target: String): AccessibilityNodeInfo? {
+        if (!LlmClient.isConfigured()) return null
+        val entries = chatEntries(root)
+        if (entries.isEmpty()) return null
+        val names = entries.map { it.second }.distinct()
+        report("列表上沒有完全一樣的「$target」，請 AI 比對同音字…")
+        val answer = runCatching {
+            LlmClient.chat(
+                "使用者用語音說了一個 Messenger 聯絡人的名字，語音辨識可能有同音或近音錯字。" +
+                    "從清單中選出最可能是同一個人的名字，只輸出清單裡的名字本身；都不像就只輸出「無」。",
+                "使用者說：$target\n清單：${names.joinToString("、")}",
+                temperature = 0.0,
+            ).trim().trim('「', '」', '"', '。')
+        }.getOrNull() ?: return null
+        val hit = entries.firstOrNull { it.second == answer } ?: return null
+        report("AI 判斷「$target」應該是「${hit.second}」")
+        return hit.first
+    }
+
+    /** 聊天列表的每一列：可點的 Button，contentDescription =「名稱, 預覽」 */
+    private fun findChatEntry(root: AccessibilityNodeInfo, target: String): AccessibilityNodeInfo? {
+        val entries = chatEntries(root)
         return entries.firstOrNull { it.second == target }?.first
             ?: entries.firstOrNull { it.second.contains(target) }?.first
     }
@@ -656,8 +1019,10 @@ object MessengerAgent {
         report(msg)
         main.post {
             busy = false
+            clearAnswers()
             // 只讀取的任務如果失敗或被停止，也要通知呼叫的人
             pendingRead?.let { cb -> pendingRead = null; cb(null) }
+            pendingRoute?.let { cb -> pendingRoute = null; cb(routeResult, routeChoice) }
             val o = overlay
             o?.showRunning(msg, null)
             main.postDelayed({
@@ -710,8 +1075,10 @@ private class AgentOverlay(private val service: AccessibilityService) {
 
     fun show() {
         if (added) return
-        val screenW = service.resources.displayMetrics.widthPixels
-        val width = (screenW * 0.6).toInt().coerceAtLeast((280 * dp).toInt()).coerceAtMost(screenW)
+        // 用短邊計算：從橫向的 CarMate 切到直向的 Messenger 時，按鈕才不會被切到畫面外
+        val dm = service.resources.displayMetrics
+        val shortSide = minOf(dm.widthPixels, dm.heightPixels)
+        val width = (shortSide * 0.94).toInt()
         val lp = WindowManager.LayoutParams(
             width,
             ViewGroup.LayoutParams.WRAP_CONTENT,

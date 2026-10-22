@@ -1,474 +1,550 @@
 package com.example.chatreader
 
-import android.content.ActivityNotFoundException
-import android.content.Context
+import android.Manifest
 import android.content.Intent
 import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
-import android.net.Uri
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
-import android.speech.RecognizerIntent
-import android.speech.tts.TextToSpeech
-import android.speech.tts.UtteranceProgressListener
 import android.text.InputType
-import android.util.Log
 import android.view.Gravity
 import android.view.View
-import android.widget.Button
+import android.view.ViewGroup
+import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
-import java.io.File
+import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
 /**
- * AI 行車助理「CarMate」主畫面（黑客松 demo 版，橫向車機畫面）
+ * CoDriver 車機主畫面（橫向、像平板車機）
  *
- * 一段旅程：
- *  🚗 上車 → CarMate 去 Messenger 讀你跟朋友的聊天 → AI 找出約定的地點與時間
- *        → 語音問你要不要導航 → 你說「好」→ 交給 Google 地圖導航（導航本身用現成的）
- *  ⏰ 路上 → 預估會遲到（目前用按鈕模擬）→ 問你要不要通知朋友 → 填好訊息 → 你按「送出」才會傳
- *  🎤 隨時 → 用說的下指令：「我今天跟澤約哪裡」「跟澤說我會晚十分鐘」「跟澤說我到了」
- *  🏁 下車 → 把這趟旅程的紀錄存成檔案
+ *  ┌ 上方列：CoDriver｜時間｜狀態燈（無障礙、雲端 AI、路由器、手機模型、免持）
+ *  ├ 左欄：油量、冷氣、車窗／後照鏡、目前行程
+ *  ├ 中間：CoDriver 說的話、路由結果（A 雲端／B 手機）、大麥克風、打字輸入
+ *  └ 右欄：上車、遲到通知、模擬疲勞、下車、停止、設定
+ *  「設定」裡填常用聯絡人、手機模型位址，並可測試連線、看紀錄。
  *
- * 語音辨識用 Android 內建的語音輸入（RecognizerIntent），語音播報用 TextToSpeech，不需要額外套件。
- * 送出訊息前一定要使用者在懸浮窗按「送出」。
+ * 流程都在 CarMate.kt，這裡只負責顯示和按鈕。
  */
 class MainActivity : AppCompatActivity() {
 
-    companion object {
-        private const val TAG = "CarMate"
-        private const val MESSENGER = "com.facebook.orca"
-        private const val MAPS = "com.google.android.apps.maps"
+    // ── 配色 ──
+    private val BG = Color.parseColor("#0B1118")
+    private val PANEL = Color.parseColor("#151F2A")
+    private val PANEL2 = Color.parseColor("#1F2C3A")
+    private val ACCENT = Color.parseColor("#F2A33A")
+    private val TEXT = Color.parseColor("#F3F0E8")
+    private val MUTED = Color.parseColor("#8FA0B0")
+    private val GREEN = Color.parseColor("#4CC38A")
+    private val BLUE = Color.parseColor("#5AA9F0")
+    private val RED = Color.parseColor("#E5604D")
 
-        // 旅程狀態放在這裡：畫面重建也不會不見
-        var appointment: Appointment? = null
-        val tripLog = mutableListOf<String>()
-        var tripStart = 0L
-    }
+    private val ui = Handler(Looper.getMainLooper())
 
+    // 會變動的元件
+    private lateinit var clockView: TextView
+    private lateinit var chipAcc: TextView
+    private lateinit var chipAi: TextView
+    private lateinit var chipRouter: TextView
+    private lateinit var chipPhone: TextView
+    private lateinit var chipHands: TextView
+    private lateinit var fuelText: TextView
+    private lateinit var fuelBar: ProgressBar
+    private lateinit var tempText: TextView
+    private lateinit var fanText: TextView
+    private lateinit var windowBtn: TextView
+    private lateinit var mirrorBtn: TextView
+    private lateinit var tripText: TextView
+    private lateinit var routeBadge: TextView
     private lateinit var sayView: TextView
     private lateinit var heardView: TextView
-    private lateinit var statusView: TextView
-    private lateinit var friendField: EditText
+    private lateinit var micBtn: TextView
+    private lateinit var micHint: TextView
     private lateinit var textInput: EditText
+    private lateinit var settingsPanel: View
+    private lateinit var friendField: EditText
+    private lateinit var phoneUrlField: EditText
+    private lateinit var phoneModelField: EditText
+    private lateinit var testResult: TextView
+    private lateinit var handsBtn: TextView
     private lateinit var logView: TextView
 
-    private val main = Handler(Looper.getMainLooper())
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
-    private val afterSpeak = HashMap<String, () -> Unit>()
+    private val permLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
-    /** 正在等「好／不要」的回答 */
-    private var pendingYesNo: ((Boolean) -> Unit)? = null
-
-    private val speechLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-            val text = res.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
-            if (res.resultCode == RESULT_OK && !text.isNullOrBlank()) {
-                onHeard(text)
-            } else {
-                heardView.text = "（沒有聽到，可以再按一次 🎤，或在下面用打字的）"
-            }
+    private val tick = object : Runnable {
+        override fun run() {
+            clockView.text = SimpleDateFormat("HH:mm", Locale.TAIWAN).format(Date())
+            ui.postDelayed(this, 10_000)
         }
-
-    // ───────────────────────── 畫面 ─────────────────────────
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 車機畫面是橫的（如果手機上轉來轉去造成問題，可以把這行註解掉）
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        supportActionBar?.hide()
+        CarMate.init(this)
 
-        val dp = resources.displayMetrics.density
-        val pad = (12 * dp).toInt()
-        fun label(size: Float, color: Int = Color.WHITE) = TextView(this).apply {
-            textSize = size; setTextColor(color)
-        }
-        fun button(text: String, onClick: () -> Unit) = Button(this).apply {
-            this.text = text; isAllCaps = false; textSize = 16f
-            setOnClickListener { onClick() }
-        }
-        fun weighted(v: View) = v.apply {
-            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        }
-
-        val title = label(22f).apply { text = "🚗 CarMate　AI 行車助理" }
-        statusView = label(13f, Color.LTGRAY)
-        sayView = label(22f).apply {
-            text = "🚗 按「上車」開始旅程，或按 🎤 跟我說話"
-            setPadding(0, pad, 0, pad / 2)
-        }
-        heardView = label(15f, Color.parseColor("#9AD0FF"))
-
-        val mic = button("🎤 說話") { listen() }.apply {
-            textSize = 22f
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, (72 * dp).toInt()
-            )
-        }
-        val row1 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(weighted(button("🚗 上車") { startTrip() }))
-            addView(weighted(button("⏰ 模擬遲到") { simulateLate() }))
-            addView(weighted(button("🏁 下車") { endTrip() }))
-            addView(weighted(button("⏹ 停止") { stopAll() }))
-        }
-
-        textInput = EditText(this).apply {
-            hint = "也可以打字：跟澤說我會晚十分鐘"
-            inputType = InputType.TYPE_CLASS_TEXT
-            setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
-        }
-        val row2 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(weighted(textInput))
-            addView(button("送出文字") {
-                val t = textInput.text.toString().trim()
-                if (t.isNotEmpty()) { textInput.setText(""); onHeard(t) }
-            })
-        }
-
-        friendField = EditText(this).apply {
-            setText("澤")
-            inputType = InputType.TYPE_CLASS_TEXT
-            setTextColor(Color.WHITE)
-        }
-        val row3 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(label(14f, Color.LTGRAY).apply { text = "今天約的人：" })
-            addView(weighted(friendField))
-            addView(button("無障礙設定") {
-                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }.apply { textSize = 12f })
-        }
-
-        val left = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(title); addView(statusView); addView(sayView); addView(heardView)
-            addView(mic); addView(row1); addView(row2); addView(row3)
-        }
-        logView = label(13f, Color.LTGRAY).apply { setTextIsSelectable(true) }
-
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setBackgroundColor(Color.parseColor("#101820"))
-            setPadding(pad, pad, pad, pad)
-            addView(ScrollView(this@MainActivity).apply {
-                addView(left)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1.2f)
-            })
-            addView(ScrollView(this@MainActivity).apply {
-                setPadding(pad, 0, 0, 0)
-                addView(logView)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
-            })
-        }
+        val root = FrameLayout(this).apply { setBackgroundColor(BG) }
+        root.addView(buildDashboard())
+        settingsPanel = buildSettings().apply { visibility = View.GONE }
+        root.addView(settingsPanel)
         setContentView(root)
-        initTts()
+        hideSystemBars()
+        askPermissions()
     }
 
     override fun onResume() {
         super.onResume()
-        val acc = if (ChatReaderService.instance != null) "✅ 無障礙服務" else "⚠️ 無障礙服務未啟用"
-        val ai = if (LlmClient.isConfigured()) "✅ AI" else "⚠️ AI 未設定"
-        statusView.text = "$acc　$ai"
-        MessengerAgent.onStatus = { render() }
+        CarMate.onUpdate = { runOnUiThread { render() } }
+        ui.post(tick)
+        hideSystemBars()
         render()
     }
 
     override fun onPause() {
         super.onPause()
-        MessengerAgent.onStatus = null
+        CarMate.onUpdate = null
+        ui.removeCallbacks(tick)
     }
 
-    override fun onDestroy() {
-        tts?.shutdown()
-        super.onDestroy()
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (settingsPanel.visibility == View.VISIBLE) showSettings(false)
+        else @Suppress("DEPRECATION") super.onBackPressed()
     }
 
-    // ───────────────────────── 說與聽 ─────────────────────────
+    // ───────────────────────── 主畫面 ─────────────────────────
 
-    private fun initTts() {
-        tts = TextToSpeech(this) init@{ status ->
-            if (status != TextToSpeech.SUCCESS) {
-                Log.w(TAG, "TTS 初始化失敗：$status")
-                return@init
-            }
-            val t = tts ?: return@init
-            val r = t.setLanguage(Locale.TAIWAN)
-            if (r == TextToSpeech.LANG_MISSING_DATA || r == TextToSpeech.LANG_NOT_SUPPORTED) {
-                t.setLanguage(Locale.CHINESE)
-            }
-            t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) {}
-                override fun onDone(utteranceId: String?) {
-                    main.post { utteranceId?.let { afterSpeak.remove(it)?.invoke() } }
-                }
-                @Deprecated("Deprecated in Java")
-                override fun onError(utteranceId: String?) {
-                    main.post { utteranceId?.let { afterSpeak.remove(it)?.invoke() } }
-                }
+    private fun buildDashboard(): View {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        page.addView(buildTopBar())
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(10) }
+        }
+        body.addView(column(buildLeft(), 1f))
+        body.addView(gap())
+        body.addView(buildCenter().apply {
+            layoutParams = LinearLayout.LayoutParams(0, MATCH, 1.55f)
+        })
+        body.addView(gap())
+        body.addView(column(buildRight(), 1f))
+        page.addView(body)
+        return page
+    }
+
+    private fun buildTopBar(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        addView(text("CoDriver", 22f, ACCENT, bold = true))
+        addView(text("　行車 AI Agent", 13f, MUTED))
+        clockView = text("", 22f, TEXT, bold = true).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        }
+        addView(clockView)
+        chipAcc = chip(); chipAi = chip(); chipRouter = chip(); chipPhone = chip()
+        chipHands = chip().apply {
+            setOnClickListener { CarMate.setHandsFree(!CarMate.handsFreeWanted); render() }
+        }
+        listOf(chipAcc, chipAi, chipRouter, chipPhone, chipHands).forEach { addView(it) }
+    }
+
+    private fun buildLeft(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+
+        // 油量（點一下切換 80% ↔ 8%，模擬低油量）
+        fuelText = text("", 28f, TEXT, bold = true)
+        fuelBar = ProgressBar(this@MainActivity, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            layoutParams = LinearLayout.LayoutParams(MATCH, dp(8)).apply { topMargin = dp(4) }
+        }
+        addView(card(
+            row(text("⛽ 油量", 13f, MUTED), spacer(), text("點一下模擬", 11f, MUTED)),
+            fuelText, fuelBar,
+        ).apply { setOnClickListener { CarMate.toggleFuel(); render() } })
+
+        // 冷氣
+        tempText = text("", 30f, TEXT, bold = true).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        }
+        fanText = text("", 13f, MUTED).apply {
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        }
+        addView(card(
+            text("❄ 冷氣", 13f, MUTED),
+            row(roundBtn("−") { CarMate.adjustAc(-1) }, tempText, roundBtn("+") { CarMate.adjustAc(1) }),
+            row(fanText, smallBtn("風 −") { CarMate.adjustFan(-1) }, smallBtn("風 +") { CarMate.adjustFan(1) }),
+        ))
+
+        // 車窗、後照鏡
+        windowBtn = toggleBtn { CarMate.toggleWindow() }
+        mirrorBtn = toggleBtn { CarMate.toggleMirror() }
+        addView(row(windowBtn, gapH(), mirrorBtn).apply { (layoutParams as LinearLayout.LayoutParams).bottomMargin = dp(10) })
+
+        // 目前行程
+        tripText = text("", 14f, TEXT).apply { setLineSpacing(0f, 1.2f) }
+        addView(card(text("🧭 目前行程", 13f, MUTED), tripText))
+    }
+
+    private fun buildCenter(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = round(PANEL, 22)
+        setPadding(dp(18), dp(14), dp(18), dp(14))
+
+        routeBadge = text("", 12f, BG, bold = true).apply {
+            background = round(MUTED, 20)
+            setPadding(dp(10), dp(3), dp(10), dp(3))
+        }
+        addView(row(text("CoDriver", 13f, ACCENT, bold = true), spacer(), routeBadge))
+
+        sayView = text("", 21f, TEXT, bold = true).apply { setLineSpacing(0f, 1.15f) }
+        heardView = text("", 14f, BLUE)
+        addView(ScrollView(this@MainActivity).apply {
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(6) }
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(sayView)
+                addView(heardView.apply { setPadding(0, dp(6), 0, 0) })
             })
-            ttsReady = true
+        })
+
+        micBtn = text("🎤", 34f, BG).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(dp(84), dp(84)).apply { gravity = Gravity.CENTER_HORIZONTAL }
+            setOnClickListener { syncContacts(); CarMate.listenCommand() }
         }
-    }
-
-    /** CarMate 說話：顯示在畫面上並唸出來；then = 唸完之後要做的事 */
-    private fun speak(text: String, then: (() -> Unit)? = null) {
-        sayView.text = "🚗 $text"
-        log("CarMate：$text")
-        val t = tts
-        if (!ttsReady || t == null) {
-            then?.let { main.postDelayed(it, 500) }
-            return
+        addView(micBtn)
+        micHint = text("", 12f, MUTED).apply {
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(4) }
         }
-        val id = "u${System.nanoTime()}"
-        if (then != null) afterSpeak[id] = then
-        // emoji 不要唸
-        val spoken = text.replace(Regex("[\\x{1F000}-\\x{1FFFF}\\x{2600}-\\x{27BF}\\x{FE0F}]"), "")
-        t.speak(spoken, TextToSpeech.QUEUE_FLUSH, null, id)
-    }
+        addView(micHint)
 
-    /** 開啟語音輸入 */
-    private fun listen() {
-        val i = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "zh-TW")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, if (pendingYesNo != null) "請說「好」或「不要」" else "請說…")
+        textInput = EditText(this@MainActivity).apply {
+            hint = "也可以打字：冷氣調低一點／跟孟澤約在哪"
+            inputType = InputType.TYPE_CLASS_TEXT
+            textSize = 14f
+            setTextColor(TEXT); setHintTextColor(MUTED)
+            background = round(PANEL2, 14)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
         }
-        try {
-            speechLauncher.launch(i)
-        } catch (e: ActivityNotFoundException) {
-            heardView.text = "這支手機沒有語音輸入，請在下面用打字的"
+        addView(row(textInput, gapH(), smallBtn("送出", ACCENT, BG) {
+            val t = textInput.text.toString().trim()
+            if (t.isNotEmpty()) { textInput.setText(""); syncContacts(); CarMate.onHeard(t) }
+        }).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(10) })
+    }
+
+    private fun buildRight(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(row(tile("🚗", "上車") { syncContacts(); CarMate.startTrip() }, gapH(),
+            tile("⏰", "遲到通知") { syncContacts(); CarMate.lateCheck() }))
+        addView(row(tile("😪", "模擬疲勞") { CarMate.simulateFatigue() }, gapH(),
+            tile("🏁", "下車") { CarMate.endTrip() }))
+        addView(row(tile("⏹", "停止") { CarMate.stopAll() }, gapH(),
+            tile("⚙", "設定") { showSettings(true) }))
+    }
+
+    // ───────────────────────── 設定頁 ─────────────────────────
+
+    private fun buildSettings(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setBackgroundColor(BG)
+        isClickable = true   // 擋住下面的主畫面
+        setPadding(dp(18), dp(12), dp(18), dp(12))
+        layoutParams = FrameLayout.LayoutParams(MATCH, MATCH)
+
+        addView(row(text("⚙ 設定", 20f, TEXT, bold = true), spacer(),
+            smallBtn("✕ 關閉") { showSettings(false) }))
+
+        val form = LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.VERTICAL
+            friendField = field("例如：孟澤、老師的名字", CarMate.contacts.joinToString("、"))
+            phoneUrlField = field("http://192.168.x.x:8080/v1", PhoneModel.baseUrl)
+            phoneModelField = field("模型名稱（llama-server 可留空）", PhoneModel.model)
+            testResult = text("", 13f, MUTED).apply { setPadding(0, dp(6), 0, dp(6)) }
+            handsBtn = smallBtn("") { CarMate.setHandsFree(!CarMate.handsFreeWanted); render() }
+
+            addView(text("常用聯絡人（幫語音認名字）", 13f, MUTED))
+            addView(friendField)
+            addView(text("B 手機模型位址（兩支手機要連同一個 Wi-Fi／熱點）", 13f, MUTED).apply { setPadding(0, dp(10), 0, 0) })
+            addView(phoneUrlField)
+            addView(phoneModelField)
+            addView(row(smallBtn("儲存並測試連線", ACCENT, BG) { saveAndTest() }, gapH(),
+                smallBtn("無障礙設定") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            ).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(8) })
+            addView(testResult)
+            addView(handsBtn.apply { layoutParams = LinearLayout.LayoutParams(MATCH, WRAP) })
         }
+        logView = text("", 12f, MUTED).apply { setTextIsSelectable(true) }
+
+        addView(LinearLayout(this@MainActivity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(MATCH, 0, 1f).apply { topMargin = dp(10) }
+            addView(ScrollView(this@MainActivity).apply {
+                addView(form)
+                layoutParams = LinearLayout.LayoutParams(0, MATCH, 1f)
+            })
+            addView(gap())
+            addView(ScrollView(this@MainActivity).apply {
+                background = round(PANEL, 16)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(text("📝 紀錄", 13f, ACCENT, bold = true))
+                    addView(logView)
+                })
+                layoutParams = LinearLayout.LayoutParams(0, MATCH, 1.2f)
+            })
+        })
     }
 
-    private fun onHeard(text: String) {
-        heardView.text = "你說：$text"
-        log("你：$text")
-        val yn = pendingYesNo
-        if (yn != null) {
-            val ans = answerOf(text)
-            if (ans == null) {
-                speak("我沒聽懂，請說好，或是不要。") { listen() }
-            } else {
-                pendingYesNo = null
-                yn(ans)
-            }
-            return
-        }
-        handleCommand(text)
-    }
-
-    /** 問一個是非題，唸完自動開始聽 */
-    private fun askYesNo(question: String, onAnswer: (Boolean) -> Unit) {
-        pendingYesNo = onAnswer
-        speak(question) { listen() }
-    }
-
-    /** 好 → true，不要 → false，聽不懂 → null */
-    private fun answerOf(t: String): Boolean? {
-        val s = t.replace(" ", "")
-        if (listOf("不要", "不用", "不必", "先不", "別", "取消", "算了", "不好").any { s.contains(it) }) return false
-        if (listOf("好", "要", "可以", "對", "嗯", "OK", "ok", "導航", "走", "是", "沒問題", "傳", "送", "麻煩").any { s.contains(it) }) return true
-        return null
-    }
-
-    // ───────────────────────── 指令 ─────────────────────────
-
-    private fun handleCommand(text: String) {
-        if (!LlmClient.isConfigured()) { speak("AI 還沒設定好，請檢查 local.properties。"); return }
-        sayView.text = "🚗 思考中…"
-        val contacts = contacts()
-        val trip = appointment?.let { "跟${it.friend}約${it.time}在${it.place}" }
-        Thread {
-            val r = runCatching { DriveBrain.route(text, contacts, trip) }
-            runOnUiThread {
-                val d = r.getOrElse {
-                    speak("AI 連線失敗：${it.message}")
-                    return@runOnUiThread
-                }
-                when (d.intent) {
-                    "appointment" -> checkAppointment(d.friend.ifEmpty { firstContact() })
-                    "late" -> notifyLate(d.friend, d.minutes, d.message)
-                    "send" -> if (d.message.isEmpty()) speak("要跟${d.friend}說什麼呢？") else sendMessage(d.friend, d.message)
-                    else -> speak(d.reply.ifEmpty { "我在，有需要再叫我。" })
-                }
-            }
-        }.start()
-    }
-
-    private fun contacts(): List<String> =
-        friendField.text.toString().split(',', '，', '、', ' ').map { it.trim() }.filter { it.isNotEmpty() }
-
-    private fun firstContact(): String = contacts().firstOrNull() ?: ""
-
-    // ───────────────────────── 情境一：上車 → 找約定 → 導航 ─────────────────────────
-
-    private fun startTrip() {
-        tripLog.clear()
-        tripStart = System.currentTimeMillis()
-        appointment = null
-        val friend = firstContact()
-        log("🚗 上車，旅程開始")
-        if (friend.isEmpty()) {
-            speak("歡迎上車！請先在「今天約的人」填上朋友的名字。")
-            return
-        }
-        speak("歡迎上車！我先去 Messenger，看一下你今天跟${friend}的約。")
-        main.postDelayed({ checkAppointment(friend) }, 2500)
-    }
-
-    private fun checkAppointment(friend: String) {
-        if (friend.isEmpty()) { speak("你要找跟誰的約呢？"); return }
-        val launch = packageManager.getLaunchIntentForPackage(MESSENGER)
-            ?: run { speak("找不到 Messenger。"); return }
-        log("去 Messenger 讀跟「$friend」的聊天")
-        val ok = MessengerAgent.startRead(friend) { snap -> onChatRead(friend, snap) }
-        if (ok) {
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(launch)
-        } else {
-            speak("現在沒辦法讀 Messenger：${MessengerAgent.history.lastOrNull() ?: ""}")
-        }
-    }
-
-    /** 讀完聊天：回到 CarMate，交給 AI 找約定 */
-    private fun onChatRead(friend: String, snap: ChatSnapshot?) {
-        if (isDestroyed) return
-        bringToFront()
-        if (snap == null) {
-            speak("讀取 Messenger 失敗了。${MessengerAgent.history.lastOrNull() ?: ""}")
-            return
-        }
-        val name = snap.partnerName ?: friend
-        val chatText = snap.messages.joinToString("\n") { "${it.speaker}：${it.text}" }
-        log("讀到跟「$name」的 ${snap.messages.size} 則訊息，交給 AI 找約定")
-        sayView.text = "🚗 正在找你們約定的地點…"
-        Thread {
-            val r = runCatching { DriveBrain.findAppointment(friend, chatText) }
-            runOnUiThread {
-                val a = r.getOrElse {
-                    speak("AI 連線失敗：${it.message}")
-                    return@runOnUiThread
-                }
-                if (!a.found) { speak(a.speech); return@runOnUiThread }
-                appointment = a
-                log("📍 約定：${a.time}　${a.place}（地圖搜尋：${a.mapQuery}）")
-                askYesNo(a.speech) { yes ->
-                    if (yes) navigate(a) else speak("好，需要的時候再叫我。")
-                }
-            }
-        }.start()
-    }
-
-    /** 把 CarMate 叫回前景（由無障礙服務啟動，Android 允許） */
-    private fun bringToFront() {
-        val i = Intent(this, MainActivity::class.java).addFlags(
-            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or Intent.FLAG_ACTIVITY_SINGLE_TOP
-        )
-        val ctx: Context = ChatReaderService.instance ?: this
-        runCatching { ctx.startActivity(i) }.onFailure { Log.w(TAG, "回到前景失敗", it) }
-    }
-
-    /** 導航交給 Google 地圖（現成的功能，我們不重做） */
-    private fun navigate(a: Appointment) {
-        log("🧭 開始導航到「${a.place}」")
-        speak("好，幫你導航到${a.place}。")
-        val nav = Intent(Intent.ACTION_VIEW, Uri.parse("google.navigation:q=" + Uri.encode(a.mapQuery)))
-            .setPackage(MAPS)
-        try {
-            startActivity(nav)
-        } catch (e: ActivityNotFoundException) {
-            try {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(a.mapQuery))))
-            } catch (e2: ActivityNotFoundException) {
-                speak("手機上沒有地圖 App。")
-            }
-        }
-    }
-
-    // ───────────────────────── 情境三：遲到通知 ─────────────────────────
-
-    /** 模擬「導航預估會遲到」：之後可改成用真正的預估抵達時間 */
-    private fun simulateLate() {
-        val a = appointment
-        val friend = a?.friend ?: firstContact()
-        val minutes = 10
-        log("⏰（模擬）導航預估會晚 $minutes 分鐘")
-        val where = a?.place?.let { "到$it" } ?: ""
-        askYesNo("照目前路況，你大概會晚 $minutes 分鐘$where。要我幫你跟${friend}說一聲嗎？") { yes ->
-            if (yes) notifyLate(friend, minutes, "") else speak("好，那我先不通知。")
-        }
-    }
-
-    private fun notifyLate(friend: String, minutes: Int?, message: String) {
-        val f = friend.ifEmpty { appointment?.friend ?: firstContact() }
-        sendMessage(f, message.ifEmpty { DriveBrain.lateTemplate(minutes) })
-    }
-
-    /** 填好訊息，懸浮窗確認後才會送出 */
-    private fun sendMessage(friend: String, msg: String) {
-        if (friend.isEmpty()) { speak("要傳給誰呢？"); return }
-        val launch = packageManager.getLaunchIntentForPackage(MESSENGER)
-            ?: run { speak("找不到 Messenger。"); return }
-        log("✉️ 準備傳給「$friend」：$msg")
-        if (MessengerAgent.start(SendCommand(friend, msg))) {
-            speak("我幫你跟${friend}說：$msg。確認沒問題，再按送出。")
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(launch)
-        } else {
-            speak("現在沒辦法傳訊息：${MessengerAgent.history.lastOrNull() ?: ""}")
-        }
-    }
-
-    // ───────────────────────── 下車：記錄旅程 ─────────────────────────
-
-    private fun endTrip() {
-        log("🏁 下車，旅程結束")
-        val mins = if (tripStart > 0) (System.currentTimeMillis() - tripStart) / 60000 else 0
-        val name = "trip_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.TAIWAN).format(Date()) + ".txt"
-        val content = buildString {
-            appendLine("CarMate 旅程紀錄")
-            appointment?.let { appendLine("約定：跟${it.friend}　${it.time}　${it.place}") }
-            appendLine()
-            tripLog.forEach { appendLine(it) }
-        }
-        runCatching { File(getExternalFilesDir(null), name).writeText(content) }
-            .onSuccess { log("已存檔：$name") }
-            .onFailure { log("存檔失敗：${it.message}") }
-        speak("到了！這趟旅程花了大約 $mins 分鐘，過程我都幫你記錄好了，下車小心。")
-    }
-
-    // ───────────────────────── 其他 ─────────────────────────
-
-    private fun stopAll() {
-        MessengerAgent.cancel()
-        pendingYesNo = null
-        afterSpeak.clear()
-        tts?.stop()
-        sayView.text = "🚗 已停止"
-    }
-
-    private fun log(s: String) {
-        val t = SimpleDateFormat("HH:mm:ss", Locale.TAIWAN).format(Date())
-        tripLog.add("$t　$s")
+    private fun showSettings(show: Boolean) {
+        if (!show) syncContacts()
+        settingsPanel.visibility = if (show) View.VISIBLE else View.GONE
         render()
     }
 
+    private fun saveAndTest() {
+        syncContacts()
+        PhoneModel.save(this, phoneUrlField.text.toString(), phoneModelField.text.toString())
+        testResult.text = "測試中…"
+        CarMate.testConnections { testResult.text = it; render() }
+    }
+
+    private fun syncContacts() {
+        if (!::friendField.isInitialized) return
+        CarMate.contacts = friendField.text.toString()
+            .split(',', '，', '、', ' ').map { it.trim() }.filter { it.isNotEmpty() }
+    }
+
+    // ───────────────────────── 更新畫面 ─────────────────────────
+
     private fun render() {
-        val agent = if (MessengerAgent.history.isEmpty()) "" else
-            "\n\n【Messenger 操作】\n" + MessengerAgent.history.joinToString("\n")
-        logView.text = "【旅程紀錄】\n" + tripLog.joinToString("\n") + agent
+        setChip(chipAcc, "無障礙", ChatReaderService.instance != null)
+        setChip(chipAi, "雲端 AI", LlmClient.isConfigured())
+        setChip(chipRouter, "路由器", Router.isConfigured())
+        setChip(chipPhone, "手機模型", PhoneModel.isSet())
+        setChip(chipHands, if (HandsFree.enabled) "免持 聆聽中" else "免持", HandsFree.enabled || CarMate.handsFreeWanted)
+
+        val fuel = CarMate.fuelPercent
+        val low = fuel <= 15
+        fuelText.text = "$fuel%"
+        fuelText.setTextColor(if (low) RED else TEXT)
+        fuelBar.progress = fuel
+        fuelBar.progressTintList = ColorStateList.valueOf(if (low) RED else GREEN)
+
+        tempText.text = if (CarMate.fanLevel == 0) "關" else "${CarMate.acTemp}°"
+        fanText.text = "風量 " + "●".repeat(CarMate.fanLevel) + "○".repeat(5 - CarMate.fanLevel)
+        setToggle(windowBtn, "🪟 車窗", if (CarMate.windowOpen) "開" else "關", CarMate.windowOpen)
+        setToggle(mirrorBtn, "🔲 後照鏡", if (CarMate.mirrorFolded) "收起" else "展開", !CarMate.mirrorFolded)
+
+        tripText.text = buildString {
+            val a = CarMate.appointment
+            if (a == null) append("還沒有行程\n按「上車」或說「找孟澤的約」")
+            else {
+                append("👥 ${a.friend}　⏰ ${a.time}\n📍 ${a.place}")
+            }
+            CarMate.lastRoute?.let { r ->
+                append("\n🛣 ${r.summary}")
+                r.arrival?.let { append("　抵達 $it") }
+                r.lateMinutes?.let { append("\n⚠ 可能晚 $it 分鐘") }
+            }
+        }
+
+        if (CarMate.lastRouteLabel.isEmpty()) {
+            routeBadge.text = "等待指令"
+            routeBadge.background = round(PANEL2, 20)
+            routeBadge.setTextColor(MUTED)
+        } else {
+            val phone = CarMate.lastRouteLabel.contains("手機")
+            val busy = CarMate.lastRouteLabel.contains("判斷中")
+            routeBadge.text = CarMate.lastRouteLabel +
+                (if (CarMate.lastRouteDetail.isNotEmpty()) "　${CarMate.lastRouteDetail}" else "")
+            routeBadge.background = round(if (busy) PANEL2 else if (phone) GREEN else BLUE, 20)
+            routeBadge.setTextColor(if (busy) MUTED else BG)
+        }
+        sayView.text = CarMate.lastSay
+        heardView.text = if (CarMate.lastHeard.isEmpty()) "" else "你：${CarMate.lastHeard}"
+
+        micBtn.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(ACCENT)
+            if (HandsFree.enabled) setStroke(dp(4), GREEN)
+        }
+        micHint.text = if (HandsFree.enabled) "點一下說話・或直接說「副駕」" else "點一下說話"
+
+        handsBtn.text = when {
+            HandsFree.enabled -> "👂 免持喚醒：聆聽中（說「副駕」叫我）— 點一下關閉"
+            CarMate.handsFreeWanted -> "👂 免持喚醒：上車後自動開啟 — 點一下改成不開"
+            else -> "👂 免持喚醒：關閉 — 點一下開啟"
+        }
+        if (settingsPanel.visibility == View.VISIBLE) {
+            val agent = if (MessengerAgent.history.isEmpty()) "" else
+                "\n\n【App 操作】\n" + MessengerAgent.history.joinToString("\n")
+            logView.text = CarMate.tripLog.joinToString("\n") + agent
+        }
+    }
+
+    private fun setChip(v: TextView, label: String, ok: Boolean) {
+        v.text = "● $label"
+        v.setTextColor(if (ok) GREEN else MUTED)
+        v.background = round(PANEL, 20, if (ok) GREEN else PANEL2)
+    }
+
+    private fun setToggle(v: TextView, label: String, state: String, on: Boolean) {
+        v.text = "$label\n$state"
+        v.setTextColor(if (on) TEXT else MUTED)
+        v.background = pressable(if (on) PANEL2 else PANEL, 16)
+    }
+
+    // ───────────────────────── 元件小工具 ─────────────────────────
+
+    private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+    private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun round(color: Int, radiusDp: Int, stroke: Int? = null) = GradientDrawable().apply {
+        setColor(color)
+        cornerRadius = dp(radiusDp).toFloat()
+        if (stroke != null) setStroke(dp(1), stroke)
+    }
+
+    /** 按下去會變亮的圓角背景 */
+    private fun pressable(color: Int, radiusDp: Int) = StateListDrawable().apply {
+        addState(intArrayOf(android.R.attr.state_pressed), round(Color.parseColor("#2C3D50"), radiusDp))
+        addState(intArrayOf(), round(color, radiusDp))
+    }
+
+    private fun text(s: String, size: Float, color: Int, bold: Boolean = false) = TextView(this).apply {
+        text = s; textSize = size; setTextColor(color)
+        if (bold) typeface = Typeface.DEFAULT_BOLD
+    }
+
+    private fun chip() = text("", 12f, MUTED).apply {
+        setPadding(dp(10), dp(4), dp(10), dp(4))
+        layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(6) }
+    }
+
+    private fun card(vararg views: View) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = pressable(PANEL, 18)
+        setPadding(dp(14), dp(10), dp(14), dp(12))
+        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(10) }
+        views.forEach { addView(it) }
+    }
+
+    private fun row(vararg views: View) = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP)
+        views.forEach { addView(it) }
+    }
+
+    private fun tile(icon: String, label: String, onClick: () -> Unit) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        background = pressable(PANEL, 18)
+        layoutParams = LinearLayout.LayoutParams(0, dp(86), 1f).apply { bottomMargin = dp(10) }
+        isClickable = true
+        setOnClickListener { onClick(); render() }
+        addView(text(icon, 26f, TEXT).apply { gravity = Gravity.CENTER })
+        addView(text(label, 14f, TEXT, bold = true).apply { gravity = Gravity.CENTER })
+    }
+
+    private fun roundBtn(label: String, onClick: () -> Unit) = text(label, 24f, TEXT, bold = true).apply {
+        gravity = Gravity.CENTER
+        background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(PANEL2) }
+        layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+        setOnClickListener { onClick(); render() }
+    }
+
+    private fun smallBtn(label: String, bg: Int = PANEL2, fg: Int = TEXT, onClick: () -> Unit) =
+        text(label, 13f, fg, bold = true).apply {
+            gravity = Gravity.CENTER
+            background = round(bg, 12)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            layoutParams = LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(4) }
+            setOnClickListener { onClick(); render() }
+        }
+
+    private fun toggleBtn(onClick: () -> Unit) = text("", 13f, TEXT, bold = true).apply {
+        gravity = Gravity.CENTER
+        setPadding(0, dp(8), 0, dp(8))
+        layoutParams = LinearLayout.LayoutParams(0, WRAP, 1f)
+        setOnClickListener { onClick(); render() }
+    }
+
+    private fun field(hint: String, value: String) = EditText(this).apply {
+        this.hint = hint
+        setText(value)
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        textSize = 14f
+        setTextColor(TEXT); setHintTextColor(MUTED)
+        background = round(PANEL, 12)
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        layoutParams = LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(4) }
+    }
+
+    private fun column(content: View, weight: Float) = ScrollView(this).apply {
+        isVerticalScrollBarEnabled = false
+        addView(content)
+        layoutParams = LinearLayout.LayoutParams(0, MATCH, weight)
+    }
+
+    private fun spacer() = View(this).apply { layoutParams = LinearLayout.LayoutParams(0, 1, 1f) }
+    private fun gap() = View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(12), 1) }
+    private fun gapH() = View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(10), 1) }
+
+    // ───────────────────────── 系統 ─────────────────────────
+
+    /** 全螢幕（像車機），從邊緣滑一下可以叫出狀態列 */
+    private fun hideSystemBars() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.let {
+                it.hide(WindowInsets.Type.systemBars())
+                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        }
+    }
+
+    /** 位置（記地點）、麥克風（免持喚醒）、通知（顯示「正在聽」）：沒給過的才問 */
+    private fun askPermissions() {
+        val wanted = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.RECORD_AUDIO,
+        )
+        if (Build.VERSION.SDK_INT >= 33) wanted.add(Manifest.permission.POST_NOTIFICATIONS)
+        val missing = wanted.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) permLauncher.launch(missing.toTypedArray())
     }
 }

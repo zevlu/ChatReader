@@ -29,6 +29,8 @@ android {
         // 程式裡用 BuildConfig.IAI_BASE、BuildConfig.IAI_KEY 讀取
         buildConfigField("String", "IAI_BASE", "\"${localProp("IAI_BASE")}\"")
         buildConfigField("String", "IAI_KEY", "\"${localProp("IAI_KEY")}\"")
+        buildConfigField("String", "SYS1_URL", "\"${localProp("SYS1_URL")}\"")
+        buildConfigField("String", "SYS1_KEY", "\"${localProp("SYS1_KEY")}\"")
     }
 
     buildFeatures {

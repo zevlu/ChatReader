@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 放在 app/src/main/res/xml/ 底下（沒有 xml 資料夾就新建一個） -->
+<!-- packageNames：無障礙服務只看這些 App。
+     com.facebook.orca = Messenger、com.google.android.apps.maps = Google 地圖、
+     com.google.android.gms = Google Play 服務（地圖上跳出的「提高定位精確度」視窗屬於它，要看得到才能自動關掉） -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:description="@string/accessibility_service_description"
-    android:packageNames="com.facebook.orca"
+    android:packageNames="com.facebook.orca,com.google.android.apps.maps,com.google.android.gms"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows"

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AI 行車助理（drive）專用的設定，編譯時會自動合併進 src/main/AndroidManifest.xml。
+  交友大師（friend）不會有這些權限和畫面。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 記下路上看到的店家位置 -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- 免持喚醒：背景聆聽「副駕」（前景服務，通知列會顯示「CarMate 正在聽」） -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 連雲端 AI、路由器和另一支手機的模型 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Android 11 以後要先宣告，才能找到並切回這些 App -->
+    <queries>
+        <package android:name="com.google.android.apps.maps" />
+        <package android:name="com.facebook.orca" />
+    </queries>
+
+    <!-- B 手機模型走區域網路 HTTP（http://192.168.x.x），需要允許非 https 連線 -->
+    <application android:usesCleartextTraffic="true">
+        <!-- 透明的「聽」畫面：獨立工作（taskAffinity 空白），不會把 CarMate 主畫面拉到地圖前面 -->
+        <activity
+            android:name=".VoiceActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <service
+            android:name=".CarMateMicService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+    </application>
+</manifest>

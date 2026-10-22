@@ -4,7 +4,8 @@ import android.util.Log
 
 /**
  * 交友大師專用：判斷對方情緒，產生三種語氣的回覆。
- * 提示詞與 JSON 格式定案於專案知識「09_提示詞與JSON格式.md」（v2，2026-10-15）。
+ * 提示詞與 JSON 格式見專案知識「09_提示詞與JSON格式.md」。
+ * v3（2026-10-22）：只回最新的訊息（舊話題只當背景）；對方問問題或要推薦時，三則都要真的回答。
  * 修改提示詞前，先用 prompt_test.ps1 在電腦上測過。
  */
 object FriendAdvisor : ReplyAdvisor {
@@ -23,17 +24,21 @@ object FriendAdvisor : ReplyAdvisor {
         你是「交友大師」，幫使用者回覆 Messenger 上朋友的訊息。
 
         【輸入】最近的聊天紀錄。「我」是使用者，「對方」是朋友。「[圖片]」代表一張圖片。
+        最後會附上【現在要回的訊息】：你的情緒判斷和回覆都以它為主。更早的訊息只當背景；話題已經換了，就不要再提舊話題裡的事（例如之前的約、地點、行程）。
 
         【任務】
         1. 判斷對方目前的情緒，從這些選一個：開心、興奮、平靜、無聊、疲累、焦慮、難過、沮喪、生氣、委屈。
         2. 情緒強度 1 到 5（1 很輕微，5 非常強烈）。
-        3. 對方最需要的，從這些選一個：安慰、傾聽、建議、一起開心、一般回覆。
+        3. 對方最需要的，從這些選一個：安慰、傾聽、建議、一起開心、回答問題、一般回覆。
         4. 用一句話說明判斷依據。
         5. 以「我」的身分，寫三則可以直接送出的回覆，三種語氣各一則：
            - 同理安慰：先接住對方的感受
            - 輕鬆幽默：用輕鬆的方式拉近距離，不能拿對方的痛處開玩笑
            - 直接關心：直接問狀況，或提出具體的陪伴、幫忙
-           如果對方沒有負面情緒，三種語氣仍然保留，但內容要配合當下氣氛（例如一起開心、正常回答問題）。
+           如果對方沒有負面情緒，三種語氣仍然保留，但內容要配合當下氣氛（例如一起開心）。
+           如果對方在問問題或請你推薦（例如「吃什麼」「去哪裡」「怎麼辦」），三則都要真的回答，給具體的選項或建議，只是語氣不同：
+           同理安慰＝先回應對方的感受再給建議；輕鬆幽默＝用好玩的方式推薦；直接關心＝直接給 2～3 個具體選項，或問一個能幫對方決定的問題。
+           一般常識可以直接給（例如食物種類：拉麵、火鍋、便當）；只有「我」才知道的事（我在哪、預算、要不要一起去）才用【】留空。
 
         【回覆規則】
         - 使用繁體中文與台灣口語，絕對不要出現簡體字；像朋友傳訊息，不要像客服或老師。
@@ -47,8 +52,22 @@ object FriendAdvisor : ReplyAdvisor {
         {"emotion":"沮喪","intensity":4,"need":"安慰","reason":"判斷依據","replies":[{"style":"同理安慰","text":"回覆內容","why":"20 字內說明為什麼這樣回"},{"style":"輕鬆幽默","text":"回覆內容","why":"…"},{"style":"直接關心","text":"回覆內容","why":"…"}]}
     """.trimIndent()
 
+    /**
+     * 只留最後 12 行，並標出「現在要回的訊息」：
+     * 對方最後一段連續的訊息（之後如果「我」已經回過，還是以對方最後那段為主）。
+     */
+    private fun withFocus(chatText: String): String {
+        val lines = chatText.lines().filter { it.isNotBlank() }.takeLast(12)
+        val lastThem = lines.indexOfLast { it.startsWith("對方：") }
+        if (lastThem < 0) return lines.joinToString("\n")
+        var first = lastThem
+        while (first > 0 && lines[first - 1].startsWith("對方：")) first--
+        val focus = lines.subList(first, lastThem + 1).joinToString("\n")
+        return lines.joinToString("\n") + "\n\n【現在要回的訊息】\n" + focus
+    }
+
     override fun suggest(chatText: String): Suggestion {
-        val content = LlmClient.chat(SYSTEM_PROMPT, chatText)
+        val content = LlmClient.chat(SYSTEM_PROMPT, withFocus(chatText))
         Log.i("FriendAdvisor", "原始回覆：$content")
         val o = LlmClient.extractJson(content)
         val arr = o.optJSONArray("replies") ?: throw LlmException("AI 回覆少了 replies")
