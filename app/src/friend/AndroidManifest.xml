@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  交友大師（friend）專用的 Manifest，位置：app/src/friend/AndroidManifest.xml
+  建置時會自動和 app/src/main/AndroidManifest.xml 合併，main 那份不用改。
+  交友小精靈（2026-10-29）：通知、鬧鐘、開機重排、小精靈對話框
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 提醒通知（Android 13 以上要使用者允許） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 準時提醒：Android 13 以上自動允許 USE_EXACT_ALARM；12 以下用 SCHEDULE_EXACT_ALARM -->
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission
+        android:name="android.permission.SCHEDULE_EXACT_ALARM"
+        android:maxSdkVersion="32" />
+    <!-- 重開機後重新排提醒 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Android 11 以上要宣告才找得到這些 App（打開 Facebook 按鈕用） -->
+    <queries>
+        <package android:name="com.facebook.orca" />
+        <package android:name="com.facebook.katana" />
+        <package android:name="com.instagram.android" />
+    </queries>
+
+    <application>
+
+        <!-- 小精靈對話框：浮在 Messenger／Facebook 上；獨立的 task，關掉就回原本的 App -->
+        <activity
+            android:name="com.example.chatreader.CompanionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.DeviceDefault.Light.Dialog.NoActionBar" />
+
+        <!-- 鬧鐘時間到 → 跳提醒通知 -->
+        <receiver
+            android:name="com.example.chatreader.ReminderReceiver"
+            android:exported="false" />
+
+        <!-- 開機後重新排鬧鐘 -->
+        <receiver
+            android:name="com.example.chatreader.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>

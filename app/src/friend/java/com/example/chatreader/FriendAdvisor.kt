@@ -7,7 +7,8 @@ import android.util.Log
  * 提示詞與 JSON 格式見專案知識「09_提示詞與JSON格式.md」。
  * v3（2026-10-22 定案）：只回最新的訊息（舊話題只當背景）；對方問問題或要推薦時，三則都要真的回答。
  * v3.1（2026-10-22）：加一行貼圖說明「[貼圖：…]」的解讀規則。
- * M4（2026-10-22，測試中）：有圖片時改用 suggestWithImages，提示詞後面追加 IMAGE_RULES。
+ * M4（2026-10-22）：有圖片時改用 suggestWithImages，提示詞後面追加 IMAGE_RULES。
+ * 小精靈（2026-10-29）：使用者訊息裡可能多一段【你記得關於對方的事】（memoryHint），系統提示詞不變。
  * 修改提示詞前，先用 prompt_test.ps1 在電腦上測過。
  */
 object FriendAdvisor : ReplyAdvisor {
@@ -61,13 +62,21 @@ object FriendAdvisor : ReplyAdvisor {
      */
     private fun withFocus(chatText: String): String {
         val lines = chatText.lines().filter { it.isNotBlank() }.takeLast(12)
+        val memory = memoryHint.takeIf { it.isNotBlank() }
+            ?.let { "\n\n【你記得關於對方的事（可以自然地用上，不要硬塞，也不要說「我記得你說過」）】\n$it" } ?: ""
         val lastThem = lines.indexOfLast { it.startsWith("對方：") }
-        if (lastThem < 0) return lines.joinToString("\n")
+        if (lastThem < 0) return lines.joinToString("\n") + memory
         var first = lastThem
         while (first > 0 && lines[first - 1].startsWith("對方：")) first--
         val focus = lines.subList(first, lastThem + 1).joinToString("\n")
-        return lines.joinToString("\n") + "\n\n【現在要回的訊息】\n" + focus
+        return lines.joinToString("\n") + memory + "\n\n【現在要回的訊息】\n" + focus
     }
+
+    /**
+     * 交友小精靈（2026-10-29）：點「💬 幫我回」時，CompanionActions 先把記憶本裡關於對方的事放進來。
+     * 空字串 = 沒記過這個人（提示詞和 v3.1 完全一樣）。
+     */
+    @Volatile var memoryHint: String = ""
 
     /** M4：有圖片時追加在系統提示詞後面的規則 */
     private val IMAGE_RULES = """
