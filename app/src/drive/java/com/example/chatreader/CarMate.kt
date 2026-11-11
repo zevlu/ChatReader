@@ -123,7 +123,7 @@ object CarMate {
     /** 網頁車機連上後為 true：導航交給網頁的模擬城市 */
     var webMode = false
         private set
-    /** 網頁回報的模擬車速（km/h，只顯示用） */
+    /** 網頁回報的模擬車速，或 BeamNG 橋接程式送來的真實車速（km/h，只顯示用） */
     var speedKmh = 0
         private set
     private var navSeq = 0
@@ -1147,11 +1147,16 @@ object CarMate {
                 "reset" -> resetForDemo()
             }
             "vehicle" -> {
-                speedKmh = j.optInt("speed", speedKmh)
+                val s = j.optInt("speed", speedKmh)
+                val speedChanged = s != speedKmh
+                speedKmh = s
                 val f = j.optInt("fuel", fuelPercent).coerceIn(0, 100)
                 if (f != fuelPercent) {
                     if (f > LOW_FUEL) fuelChecked = false     // 加滿油了，之後低油量可以再提醒
                     fuelPercent = f
+                    update()
+                } else if (speedChanged && j.optBoolean("game")) {
+                    // 2026-11-11：BeamNG 橋接程式送來的車速（game=true）要即時推給網頁車機顯示
                     update()
                 }
             }
@@ -1357,7 +1362,7 @@ object CarMate {
         put("routeDetail", lastRouteDetail)
         put("ask", if (pendingAnswer != null) answerPrompt else "")
         put("car", JSONObject()
-            .put("fuel", fuelPercent).put("ac", acTemp).put("fan", fanLevel).put("window", windowOpen)
+            .put("fuel", fuelPercent).put("speed", speedKmh).put("ac", acTemp).put("fan", fanLevel).put("window", windowOpen)
             .put("mirror", mirrorFolded).put("volume", volume).put("lights", lightsOn))
         appointment?.let {
             put("appt", JSONObject().put("friend", it.friend).put("time", it.time).put("timeHHmm", it.timeHHmm)
