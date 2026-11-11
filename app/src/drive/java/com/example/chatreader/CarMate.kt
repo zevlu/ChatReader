@@ -15,6 +15,8 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.content.ContextCompat
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -26,6 +28,10 @@ import java.util.Locale
  * MainActivity 只是顯示用的畫面；🎤 泡泡（AssistantBubble）讓你在任何畫面都能叫它。
  *
  * 安全規則：訊息一定要使用者確認（說「送出」或按「送出」）才會傳。
+ *
+ * 網頁車機（2026-11-02 雛形）：電腦瀏覽器打開 DashServer 的網址後進入「網頁模式」——
+ * 導航改在網頁的模擬城市裡規劃（不開 Google 地圖），車速、油量由網頁模擬；
+ * 找約定、傳訊息照舊操作手機上真的 Messenger。手機 = 車上的電腦，網頁 = 車機螢幕。
  */
 object CarMate {
     private const val TAG = "CarMate"
@@ -64,6 +70,7 @@ object CarMate {
     var fuelPercent = 80
         private set
     private const val LOW_FUEL = 15              // 低於這個 % 就提醒加油
+    private const val READ_MORE_PAGES = 4        // 畫面上找不到約定時，往上翻幾頁再找
     private const val GAS_QUERY = "加油站"        // 順路停靠點交給 Google 地圖找
     private const val NAV_CHECK_MS = 60_000L     // 導航中多久檢查一次抵達時間
     private const val FATIGUE_MIN = 90           // 連續開多久（分鐘）主動問要不要休息
@@ -112,6 +119,27 @@ object CarMate {
     private var screenPkg: String? = null
     private var screenTexts: List<String> = emptyList()
 
+    // ── 網頁車機（DashServer） ──
+    /** 網頁車機連上後為 true：導航交給網頁的模擬城市 */
+    var webMode = false
+        private set
+    /** 網頁回報的模擬車速（km/h，只顯示用） */
+    var speedKmh = 0
+        private set
+    private var navSeq = 0
+    private var navReq: JSONObject? = null       // 給網頁的導航指令（放在狀態裡推過去）
+    private var webNav: JSONObject? = null       // 網頁回報的導航狀態
+    private var webRouteAppt: Appointment? = null
+
+    // 三站展示（網頁 ?station=1|2|3 打招呼時告訴我們）
+    private var station = 0
+    private var demoSending = false              // 模擬聊天模式：訊息填好、等使用者確認
+    /** 模擬聊天模式：2、3 號站，或手機（模擬器）上沒有 Messenger 時，改讀 assets/demo_chats.json */
+    private val demoChats: Boolean get() = station == 2 || station == 3 || !isInstalled(MESSENGER)
+
+    private fun isInstalled(pkg: String): Boolean =
+        runCatching { app.packageManager.getPackageInfo(pkg, 0); true }.getOrDefault(false)
+
     /** 上車時要不要開免持喚醒（畫面上的開關） */
     var handsFreeWanted = true
 
@@ -131,6 +159,8 @@ object CarMate {
         MessengerAgent.onAsk = { kind, _, _ -> onAgentAsk(kind) }
         MessengerAgent.onStatus = { msg -> onAgentStatus(msg) }
         MessengerAgent.onPlaceList = { name -> relaunchWithPlace(name) }
+        DashServer.start(app)
+        log("🖥 網頁車機：電腦瀏覽器打開 ${DashServer.url()}")
     }
 
     // ───────────────────────── 說、聽、問 ─────────────────────────
@@ -344,7 +374,11 @@ object CarMate {
     /** A 雲端：原本的 App 操作流程。在背景執行緒呼叫 */
     private fun handleCloud(text: String) {
         if (!LlmClient.isConfigured()) { main.post { say("AI 還沒設定好，請檢查 local.properties。") }; return }
-        val trip = appointment?.let { "跟${it.friend}約${it.time}在${it.place}" }
+        val nowDest = if (webMode) webRouteAppt?.place?.takeIf { navReq?.optString("cmd") == "plan" } else routeDest.ifEmpty { null }
+        val trip = listOfNotNull(
+            appointment?.let { "跟${it.friend}約${it.time}在${it.place}" },
+            nowDest?.let { "目前導航到$it" },
+        ).joinToString("；").ifEmpty { null }
         val cs = (contacts + knownNames).distinct()
         run {
             val r = runCatching { DriveBrain.route(text, cs, trip) }
@@ -356,6 +390,7 @@ object CarMate {
                 when (d.intent) {
                     "appointment" -> if (d.friend.isEmpty()) askName("要找跟誰的約？") { checkAppointment(it) } else checkAppointment(d.friend)
                     "go" -> goTo(d.place)
+                    "stop" -> addStop(d.place, d.dest)
                     "late" -> notifyLate(d.friend, d.minutes, d.message)
                     "send" -> when {
                         d.message.isEmpty() -> say("要跟${d.friend.ifEmpty { "對方" }}說什麼呢？")
@@ -400,6 +435,8 @@ object CarMate {
         tripStart = System.currentTimeMillis()
         appointment = null
         lastRoute = null
+        navReq = null
+        webNav = null
         stopNavWatch()
         pendingAnswer = null
         fuelChecked = false
@@ -409,9 +446,19 @@ object CarMate {
         chatting = false
         log("🚗 上車，旅程開始（油量 $fuelPercent%）")
         if (!AssistantBubble.show()) log("⚠️ 無障礙服務沒開，🎤 泡泡出不來")
-        if (handsFreeWanted) startHandsFree()
+        if (handsFreeWanted && !Voice.silent) startHandsFree()   // 網頁車機接手聲音時，手機不用聽
         // 用說的告訴 CarMate 要去哪：「去跟孟澤約的地方」或「帶我去高雄車站」
         // 一上車先報告基本狀況（時間、油量），再問要去哪
+        // 油不夠：上車就主動問要不要先去加油（展示「完整旅程」從這裡開始）
+        if (fuelPercent <= LOW_FUEL) {
+            fuelChecked = true
+            log("⛽ 上車時油量只剩 $fuelPercent%，主動提醒")
+            askYesNo("歡迎上車！現在${clock().substring(0, 5)}，油量只剩 $fuelPercent%，可能不夠跑一趟。要先帶你去最近的加油站嗎？") { yes ->
+                if (yes) goTo("加油站")
+                else { fuelChecked = false; say("好，那今天要去哪裡？油量更低時我再提醒你。") }
+            }
+            return
+        }
         val fuelNote = if (fuelPercent <= LOW_FUEL) "，有點低，等一下規劃路線時我會幫你留意" else ""
         say("歡迎上車！現在${clock().substring(0, 5)}，油量 $fuelPercent%$fuelNote。今天要去哪裡？") {
             Voice.listen("今天要去哪裡？") { t ->
@@ -428,6 +475,28 @@ object CarMate {
         navigate(Appointment(found = true, friend = "", place = place, mapQuery = place, time = "", timeHHmm = "", speech = ""))
     }
 
+    /**
+     * 中途加一個停靠點：「先去學校再去逢甲夜市」「我要先去加油站」。
+     * 沒說最後目的地就沿用目前的導航；正在導航中就直接改路線、繼續開。
+     */
+    private fun addStop(stop: String, dest: String) {
+        if (stop.isEmpty()) { say("要先去哪裡呢？"); return }
+        val cur = if (webMode) webRouteAppt?.takeIf { navReq?.optString("cmd") == "plan" }
+                  else appointment?.takeIf { routeDest.isNotEmpty() }
+        val final = dest.ifEmpty { cur?.place.orEmpty() }
+        if (final.isEmpty() || final == stop) { goTo(stop); return }      // 沒有原本的目的地：直接去
+        if (stop.contains("加油")) fuelChecked = true
+        val a = if (cur != null && (dest.isEmpty() || cur.place.contains(dest) || dest.contains(cur.place))) cur
+                else Appointment(found = true, friend = "", place = final, mapQuery = final, time = "", timeHHmm = "", speech = "")
+        log("📍 加停靠點：先去「$stop」，再去「${a.place}」")
+        if (webMode) {
+            val moving = navReq?.optBoolean("start") == true && navReq?.optString("cmd") == "plan"
+            requestWebRoute(a, viaGas = false, startNow = moving, via = stop)
+        } else {
+            startRoute(a, viaGas = false, stop = stop)
+        }
+    }
+
     /** 名字沒說清楚時，問一次 */
     private fun askName(question: String, then: (String) -> Unit) =
         ask(question, "請說對方的名字") { t ->
@@ -438,10 +507,11 @@ object CarMate {
     /** 用過的名字記起來，下次語音辨識認錯字時可以對照 */
     private val knownNames = linkedSetOf<String>()
 
-    private fun checkAppointment(friend: String) {
+    private fun checkAppointment(friend: String, pagesUp: Int = 0) {
         if (friend.isEmpty()) { say("你要找跟誰的約呢？"); return }
-        log("去 Messenger 讀跟「$friend」的聊天")
-        val ok = MessengerAgent.startRead(friend) { snap -> onChatRead(friend, snap) }
+        if (demoChats) { readDemoChat(friend); return }
+        log(if (pagesUp == 0) "去 Messenger 讀跟「$friend」的聊天" else "往上翻 $pagesUp 頁，找更早的訊息")
+        val ok = MessengerAgent.startRead(friend, pagesUp) { snap -> onChatRead(friend, snap, pagesUp) }
         if (ok) {
             if (!launchPackage(MESSENGER)) { MessengerAgent.cancel(); say("找不到 Messenger。") }
         } else {
@@ -449,13 +519,37 @@ object CarMate {
         }
     }
 
-    private fun onChatRead(friend: String, snap: ChatSnapshot?) {
+    private fun onChatRead(friend: String, snap: ChatSnapshot?, pagesUp: Int = 0) {
         bringCarMateFront()
         if (snap == null) { log("讀取 Messenger 失敗"); return }   // 失敗原因 onAgentStatus 會唸
         val name = snap.partnerName ?: friend
         knownNames.add(name)
         val chatText = snap.messages.joinToString("\n") { "${it.speaker}：${it.text}" }
         log("讀到跟「$name」的 ${snap.messages.size} 則訊息，交給 AI 找約定")
+        // 第一次只讀目前畫面；找不到再往上翻幾頁重讀一次（約定可能是很久以前講的）
+        val more: (() -> Unit)? = if (pagesUp == 0) ({
+            log("這一頁沒看到約定，往上翻")
+            say("這一頁沒看到約定，我往上翻翻看。") { checkAppointment(name, READ_MORE_PAGES) }
+        }) else null
+        findInChat(name, chatText, more)
+    }
+
+    /** 模擬聊天模式：不開 Messenger，直接讀預先準備好的對話 */
+    private fun readDemoChat(friend: String) {
+        val hit = DemoChats.find(app, friend)
+        if (hit == null) {
+            val names = DemoChats.names(app)
+            say(if (names.isEmpty()) "這台沒有準備模擬聊天。" else "我的模擬聊天裡沒有「$friend」，可以試試：${names.joinToString("、")}。")
+            return
+        }
+        val (name, lines) = hit
+        knownNames.add(name)
+        log("💬 讀模擬聊天：跟「$name」的 ${lines.size} 則訊息，交給 AI 找約定")
+        findInChat(name, lines.joinToString("\n"))
+    }
+
+    /** 把聊天交給雲端 AI 找約定，找到就問要不要導航 */
+    private fun findInChat(friend: String, chatText: String, onNotFound: (() -> Unit)? = null) {
         lastSay = "正在找你們約定的地點…"
         update()
         Thread {
@@ -465,9 +559,9 @@ object CarMate {
                     say("AI 連線失敗：${it.message}")
                     return@post
                 }
-                if (!a.found) { say(a.speech); return@post }
+                if (!a.found) { if (onNotFound != null) onNotFound() else say(a.speech); return@post }
                 appointment = a
-                log("📍 約定：${a.time}　${a.place}（地圖搜尋：${a.mapQuery}）")
+                log("📍 約定：${a.time}　${a.place}（地圖搜尋：${a.mapQuery}）" + if (a.evidence.isNotEmpty()) "　依據：「${a.evidence}」" else "")
                 askYesNo(a.speech) { yes -> if (yes) navigate(a) else say("好，需要的時候再叫我。") }
             }
         }.start()
@@ -520,12 +614,19 @@ object CarMate {
             .onFailure { log("⚠️ 重新規劃失敗：${it.message}") }
     }
 
-    private fun startRoute(a: Appointment, viaGas: Boolean) {
-        log("🧭 請 Google 地圖規劃到「${a.place}」的路線" + if (viaGas) "（中途加油）" else "")
-        say(if (viaGas) "好，我把加油站排進路線裡。" else "好，我請 Google 地圖幫你規劃路線。")
+    private fun startRoute(a: Appointment, viaGas: Boolean, stop: String = "") {
+        if (webMode) {
+            // 正在去加油站的路上又說要去別的地方：加油站留著當停靠點，加完油再去（不會把加油站弄丟）
+            val keepGas = if (stop.isEmpty() && !viaGas) headingToGas() else null
+            if (keepGas != null) log("⛽ 正在去加油站：加完油再去「${a.place}」")
+            requestWebRoute(a, viaGas, startNow = keepGas != null, via = stop.ifEmpty { keepGas.orEmpty() })
+            return
+        }
+        log("🧭 請 Google 地圖規劃到「${a.place}」的路線" + if (stop.isNotEmpty()) "（中途先到$stop）" else if (viaGas) "（中途加油）" else "")
+        say(if (stop.isNotEmpty()) "好，先去$stop，再去${a.place}。" else if (viaGas) "好，我把加油站排進路線裡。" else "好，我請 Google 地圖幫你規劃路線。")
         // Google 地圖官方網址格式；waypoints = 中途停靠點
         routeDest = a.mapQuery
-        routeStop = if (viaGas) GAS_QUERY else ""
+        routeStop = if (stop.isNotEmpty()) stop else if (viaGas) GAS_QUERY else ""
         val uri = mapsDirUri(routeDest, routeStop)
         val watching = MessengerAgent.startRoute(
             a.timeHHmm, a.friend,
@@ -609,7 +710,10 @@ object CarMate {
         when {
             msg.startsWith("✅ 已送出") -> {
                 log("✉️ 已送出給「$sendFriend」")
-                if (navigating) {
+                if (webMode) {
+                    say("送出了。")
+                    main.postDelayed({ bringCarMateFront() }, 1500)
+                } else if (navigating) {
                     say("送出了，幫你切回導航。")
                     main.postDelayed({ launchPackage(MAPS) }, 1500)
                 } else {
@@ -640,6 +744,7 @@ object CarMate {
     /** 回答「還要多久」：讀按 🎤 那一刻的導航畫面 */
     private fun answerEta() {
         val a = appointment
+        if (webMode) { answerWebEta(); return }
         if (screenPkg == MAPS) {
             val eta = parseNavEta(screenTexts)
             if (eta != null) {
@@ -688,11 +793,28 @@ object CarMate {
 
     /** 遲到通知：有導航算出來的遲到分鐘就用它，沒有就用 10 分鐘模擬 */
     fun lateCheck() {
+        if (webMode) { webLateCheck(); return }
         val a = appointment
         val friend = a?.friend ?: firstContact()
         val real = lastRoute?.lateMinutes
         val minutes = real ?: 10
         log(if (real != null) "⏰ 依導航預估會晚 $minutes 分鐘" else "⏰（模擬）預估會晚 $minutes 分鐘")
+        val where = a?.place?.let { "到$it" } ?: ""
+        askYesNo("照目前路況，你大概會晚 $minutes 分鐘$where。要我幫你跟${friend}說一聲嗎？") { yes ->
+            if (yes) notifyLate(friend, minutes, "") else say("好，那我先不通知。")
+        }
+    }
+
+    /** 網頁模式的遲到檢查（1 號站事故後網頁會送 late，或工作人員按 Shift+L） */
+    private fun webLateCheck() {
+        if (pendingAnswer != null || demoSending || MessengerAgent.busy) return   // 正在問別的事（可能已經自己提醒了）
+        val a = appointment
+        val friend = a?.friend?.ifEmpty { null } ?: firstContact()
+        val arrival = webNav?.optString("arrival").orEmpty()
+        val real = if (a != null && a.timeHHmm.isNotEmpty() && arrival.isNotEmpty()) lateMinutes(arrival, a.timeHHmm) else null
+        val minutes = real ?: 10
+        lastWarnedLate = maxOf(lastWarnedLate, minutes)        // 導航檢查就不會再問一次
+        log(if (real != null) "⏰ 依模擬路況會晚 $minutes 分鐘" else "⏰（模擬）預估會晚 $minutes 分鐘")
         val where = a?.place?.let { "到$it" } ?: ""
         askYesNo("照目前路況，你大概會晚 $minutes 分鐘$where。要我幫你跟${friend}說一聲嗎？") { yes ->
             if (yes) notifyLate(friend, minutes, "") else say("好，那我先不通知。")
@@ -711,11 +833,32 @@ object CarMate {
         sendMsg = msg
         knownNames.add(friend)
         log("✉️ 準備傳給「$friend」：$msg")
+        if (demoChats) { demoSend(friend, msg); return }
         if (MessengerAgent.start(SendCommand(friend, msg))) {
             say("好，我去 Messenger 幫你把訊息填好。")
             if (!launchPackage(MESSENGER)) { MessengerAgent.cancel(); say("找不到 Messenger。") }
         } else {
             say("現在沒辦法傳訊息：${MessengerAgent.history.lastOrNull() ?: ""}")
+        }
+    }
+
+    /** 模擬聊天模式的傳訊息：一樣要使用者說「送出」，但不會真的傳出去 */
+    private fun demoSend(friend: String, msg: String) {
+        demoSending = true
+        ask(
+            "要傳給${friend}：「$msg」。確認沒問題就說「送出」，要取消就說「取消」。",
+            "請說「送出」或「取消」",
+        ) { t ->
+            val a = answerOf(t) ?: return@ask false
+            demoSending = false
+            if (a) {
+                log("✉️ 已送出給「$friend」（模擬，沒有真的傳）")
+                say(if (station == 0) "送出了（模擬）。" else "送出了！這台是模擬的，想看真的傳到 Messenger，可以去 1 號站。")
+            } else {
+                log("✉️ 已取消，沒有送出")
+                say("好，沒有送出。")
+            }
+            true
         }
     }
 
@@ -806,7 +949,7 @@ object CarMate {
         override fun run() {
             if (!navigating) return
             checkNavProgress()
-            main.postDelayed(this, NAV_CHECK_MS)
+            main.postDelayed(this, navInterval())
         }
     }
 
@@ -816,7 +959,7 @@ object CarMate {
         lastWarnedLate = info?.lateMinutes ?: 0   // 出發時已經提醒過的不重複講
         nearAsked = false
         main.removeCallbacks(navWatch)
-        main.postDelayed(navWatch, NAV_CHECK_MS)
+        main.postDelayed(navWatch, navInterval())
     }
 
     private fun stopNavWatch() {
@@ -835,6 +978,7 @@ object CarMate {
             offerBreak()
             return
         }
+        if (webMode) { checkWebNav(); return }
         captureScreen()
         if (screenPkg != MAPS) return
         val eta = parseNavEta(screenTexts) ?: return
@@ -966,6 +1110,271 @@ object CarMate {
         update()
     }
 
+    // ───────────────────────── 網頁車機（2026-11-02 雛形） ─────────────────────────
+
+    /** 模擬城市裡的車程很短，檢查頻率改成 8 秒一次 */
+    private fun navInterval() = if (webMode) 8_000L else NAV_CHECK_MS
+
+    /** 有網頁連上（DashServer 呼叫，主執行緒） */
+    fun onDashConnected() {
+        if (!webMode) {
+            webMode = true
+            log("🖥 網頁車機已連線：導航改在網頁的模擬城市，訊息照舊用手機的 Messenger")
+        }
+        update()
+    }
+
+    /** 網頁送來的事情（DashServer 呼叫，主執行緒） */
+    fun onDash(j: JSONObject) {
+        when (j.optString("type")) {
+            "hello" -> {
+                if (j.has("silent")) Voice.silent = j.optBoolean("silent")
+                station = j.optInt("station", 0)
+                log("🖥 網頁車機連上" + (if (station > 0) "（$station 號站）" else "") + if (demoChats) "，使用模擬聊天" else "")
+                onDashConnected()
+            }
+            "cmd" -> {
+                val t = j.optString("text").trim()
+                if (t.isNotEmpty()) { Voice.stop(); onHeard(t) }
+            }
+            "action" -> when (j.optString("name")) {
+                "board" -> startTrip()
+                "listen" -> listenCommand()
+                "end" -> endTrip()
+                "stop" -> stopAll()
+                "fatigue" -> simulateFatigue()
+                "late" -> lateCheck()
+                "reset" -> resetForDemo()
+            }
+            "vehicle" -> {
+                speedKmh = j.optInt("speed", speedKmh)
+                val f = j.optInt("fuel", fuelPercent).coerceIn(0, 100)
+                if (f != fuelPercent) {
+                    if (f > LOW_FUEL) fuelChecked = false     // 加滿油了，之後低油量可以再提醒
+                    fuelPercent = f
+                    update()
+                }
+            }
+            "nav" -> onWebNav(j)
+        }
+    }
+
+    /** 展示站：換下一位來試的人，清掉上一位的約定、路線、對話（不清聯絡人和設定） */
+    fun resetForDemo() {
+        MessengerAgent.cancel()
+        stopNavWatch()
+        pendingAnswer = null
+        chatting = false
+        chatHistory.clear()
+        appointment = null
+        lastRoute = null
+        navReq = null
+        webNav = null
+        webRouteAppt = null
+        fuelChecked = false
+        lastWarnedLate = 0
+        nearAsked = false
+        fatigueAsked = false
+        sendFriend = ""
+        sendMsg = ""
+        demoSending = false
+        lastHeard = ""
+        lastRouteLabel = ""
+        lastRouteDetail = ""
+        lastSay = "按 Enter 開始任務"
+        tripLog.clear()
+        log("🔄 展示重置")
+    }
+
+    /** 請網頁在模擬城市裡規劃路線；startNow = 導航中改路線（例如繞去加油），直接開始不用再問 */
+    /** 網頁模式：正在導航去加油站（還沒到）就回傳那個加油站的名字 */
+    private fun headingToGas(): String? {
+        val r = navReq ?: return null
+        val cur = webRouteAppt ?: return null
+        val going = r.optString("cmd") == "plan" && r.optBoolean("start") && r.optString("via").isEmpty()
+        return if (going && cur.place.contains("加油")) cur.place else null
+    }
+
+    private fun requestWebRoute(a: Appointment, viaGas: Boolean, startNow: Boolean = false, via: String = "") {
+        navSeq++
+        webRouteAppt = a
+        webNav = null
+        navReq = JSONObject()
+            .put("id", navSeq).put("cmd", "plan").put("dest", a.place)
+            .put("viaGas", viaGas).put("via", via).put("start", startNow)
+        log("🧭 請網頁車機規劃到「${a.place}」的路線" + if (via.isNotEmpty()) "（中途先到$via）" else if (viaGas) "（中途加油）" else "")
+        if (!startNow) say(if (via.isNotEmpty()) "好，先去$via，再去${a.place}。" else if (viaGas) "好，我把加油站排進路線裡。" else "好，我幫你規劃路線。")
+        update()
+    }
+
+    private fun onWebNav(j: JSONObject) {
+        if (j.optInt("id") != navSeq) return            // 舊的路線，不理它
+        webNav = j
+        val a = webRouteAppt
+        when (j.optString("status")) {
+            "planned" -> {
+                val mins = j.optInt("minutes")
+                val km = j.optDouble("km", 0.0)
+                val arrival = j.optString("arrival")
+                // 1 號站、4 號站：約定時間第一次規劃時改成「剛好來得及」（改過的時間後面有「（展示）」，不會再改）
+                if ((station == 1 || station == 4) && webRouteAppt?.time?.endsWith("（展示）") != true) demoApptTime(arrival)
+                val a = webRouteAppt
+                val late = if (a != null && a.timeHHmm.isNotEmpty()) lateMinutes(arrival, a.timeHHmm) else null
+                val r = RouteInfo("$mins 分鐘 (${"%.1f".format(km)} 公里)", mins, false, arrival, late)
+                lastRoute = r
+                log("🗺 網頁規劃好路線：${r.summary}，預計 $arrival 到" + (late?.let { "（會晚 $it 分鐘）" } ?: ""))
+                if (navReq?.optBoolean("start") == true) {
+                    if (!navigating) startNavWatch(r)
+                    say("路線改好了，先去${j.optString("via").ifEmpty { "加油站" }}，再到${a?.place ?: "目的地"}。")
+                } else {
+                    askWebStart(r, a)
+                }
+            }
+            "via" -> {
+                val v = j.optString("via").ifEmpty { "加油站" }
+                log("📍 到達停靠點「$v」")
+                say(if (j.optBoolean("gas") || v.contains("加油")) "到${v}了，加完油繼續往${a?.place ?: "目的地"}開。"
+                    else "到${v}了。辦完事就繼續往${a?.place ?: "目的地"}開，路線已經接好了。")
+            }
+            "arrived" -> {
+                stopNavWatch()
+                navReq?.put("cmd", "done")
+                log("🏁 抵達「${j.optString("dest")}」")
+                say("到了！這裡就是${j.optString("dest").ifEmpty { a?.place ?: "目的地" }}。")
+            }
+            "failed" -> say("我在地圖上找不到「${j.optString("dest")}」，換個地點試試？")
+        }
+        update()
+    }
+
+    /**
+     * 1 號站：真的聊天裡約的時間（例如今晚 7 點）跟展示當下對不上，
+     * 所以把約定時間改成「預計到達＋2 分鐘」：出發時來得及，路上事故（網頁＋12 分鐘）才會遲到。
+     * （網頁的車程是用距離估的，開得比真實時間快，所以事故的延誤要給多一點，算出來大約晚 5～7 分鐘。）
+     */
+    private fun demoApptTime(arrival: String) {
+        val a = webRouteAppt ?: return
+        if (a.friend.isEmpty()) return
+        val m = Regex("""^(\d{1,2}):(\d{2})$""").find(arrival.trim()) ?: return
+        val t = (m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() + 2) % (24 * 60)
+        val hhmm = "%02d:%02d".format(t / 60, t % 60)
+        val b = a.copy(time = "$hhmm（展示）", timeHHmm = hhmm)
+        webRouteAppt = b
+        if (appointment == a) appointment = b
+        log("（展示）約定時間設成 $hhmm，出發時剛好來得及")
+    }
+
+    /** 路線規劃好了：唸出來，問要不要開始（和 Google 地圖版的「route」問題一樣） */
+    private fun askWebStart(r: RouteInfo, a: Appointment?) {
+        val canNotify = r.lateMinutes != null && !a?.friend.isNullOrEmpty()
+        val prompt = if (canNotify) {
+            "開始導航就說「好」，要順便通知${a?.friend}就說「通知」，不要就說「取消」"
+        } else {
+            "開始導航就說「好」，不要就說「取消」"
+        }
+        ask(routeSpeech(r, a) + prompt + "。", prompt) { t ->
+            val choice = when {
+                NO_WORDS.any { t.contains(it) } -> -1
+                t.contains("通知") -> if (canNotify) 2 else 1
+                answerOf(t) == true -> 1
+                else -> null
+            } ?: return@ask false
+            if (choice < 0) {
+                navReq?.put("cmd", "cancel")
+                say("好，需要的時候再叫我。")
+            } else {
+                navReq?.put("start", true)
+                startNavWatch(r)
+                log("▶ 開始導航（${r.summary}）")
+                if (choice == 2 && a != null) notifyLate(a.friend, r.lateMinutes, "")
+                else say("出發囉，路上小心。有事叫我「副駕」或按麥克風。")
+            }
+            update()
+            true
+        }
+    }
+
+    /** 網頁模式的「還要多久」：用網頁回報的剩餘時間 */
+    private fun answerWebEta() {
+        val j = webNav
+        if (!navigating || j == null) { say("目前沒有在導航喔。"); return }
+        val a = appointment
+        val mins = j.optInt("minutesLeft", j.optInt("minutes"))
+        val km = j.optDouble("kmLeft", j.optDouble("km", 0.0))
+        val arrival = j.optString("arrival")
+        val sb = StringBuilder("還要大約${fmtMinutes(mins.coerceAtLeast(1))}，${"%.1f".format(km)} 公里")
+        if (arrival.isNotEmpty()) sb.append("，預計").append(arrival).append("到")
+        sb.append("。")
+        val late = if (a != null && a.timeHHmm.isNotEmpty() && arrival.isNotEmpty()) lateMinutes(arrival, a.timeHHmm) else null
+        if (late != null && a != null && a.friend.isNotEmpty()) {
+            sb.append("會比約定的").append(a.timeHHmm).append("晚大約").append(late).append("分鐘，要幫你跟").append(a.friend).append("說一聲嗎？")
+            askYesNo(sb.toString()) { yes -> if (yes) notifyLate(a.friend, late, "") else say("好，那我先不通知。") }
+        } else {
+            if (a != null && a.timeHHmm.isNotEmpty()) sb.append("跟${a.friend}約的時間來得及。")
+            say(sb.toString())
+        }
+    }
+
+    /** 網頁模式的導航中主動關心：低油量、會遲到、快到了 */
+    private fun checkWebNav() {
+        val j = webNav ?: return
+        val a = appointment
+        if (!fuelChecked && fuelPercent <= LOW_FUEL) {
+            fuelChecked = true
+            log("⛽ 導航中油量剩 $fuelPercent%，主動提醒")
+            askYesNo("油量只剩 $fuelPercent%，順路有加油站，要繞過去加油嗎？") { yes ->
+                val ap = webRouteAppt
+                if (yes && ap != null) requestWebRoute(ap, viaGas = true, startNow = true)
+                else say("好，油量更低時記得加油。")
+            }
+            return
+        }
+        val mins = j.optInt("minutesLeft", -1).takeIf { it >= 0 }
+        val arrival = j.optString("arrival").ifEmpty { null }
+        val late = if (a != null && arrival != null && a.timeHHmm.isNotEmpty()) lateMinutes(arrival, a.timeHHmm) else null
+        if (a != null && late != null && late >= lastWarnedLate + 3 && a.friend.isNotEmpty()) {
+            lastWarnedLate = late
+            log("⏰ 模擬路況會晚 $late 分鐘，主動提醒")
+            askYesNo("照現在路況，你會比約定的${a.timeHHmm}晚大約${late}分鐘。要幫你跟${a.friend}說一聲嗎？") { yes ->
+                if (yes) notifyLate(a.friend, late, "") else say("好，那我先不通知。")
+            }
+            return
+        }
+        if (!nearAsked && mins != null && mins <= 2 && a != null && a.friend.isNotEmpty()) {
+            nearAsked = true
+            log("📍 剩 $mins 分鐘，主動問要不要通知")
+            askYesNo("快到了，要跟${a.friend}說你快到了嗎？") { yes ->
+                if (yes) sendMessage(a.friend, "我快到了 🙌") else say("好。")
+            }
+        }
+    }
+
+    /** 推給網頁的狀態 */
+    private fun stateJson(): String = JSONObject().apply {
+        put("say", lastSay)
+        put("heard", lastHeard)
+        put("routeLabel", lastRouteLabel)
+        put("routeDetail", lastRouteDetail)
+        put("ask", if (pendingAnswer != null) answerPrompt else "")
+        put("car", JSONObject()
+            .put("fuel", fuelPercent).put("ac", acTemp).put("fan", fanLevel).put("window", windowOpen)
+            .put("mirror", mirrorFolded).put("volume", volume).put("lights", lightsOn))
+        appointment?.let {
+            put("appt", JSONObject().put("friend", it.friend).put("time", it.time).put("timeHHmm", it.timeHHmm)
+                .put("place", it.place).put("evidence", it.evidence))
+        }
+        if ((MessengerAgent.busy || demoSending) && sendMsg.isNotEmpty()) {
+            put("msg", JSONObject().put("friend", sendFriend).put("text", sendMsg).put("demo", demoSending))
+        }
+        put("agent", if (demoSending) "已填好（模擬），等你說「送出」" else MessengerAgent.history.lastOrNull() ?: "")
+        put("station", station)
+        if (demoChats) put("demoChats", DemoChats.toJson(app))
+        navReq?.let { put("nav", it) }
+        put("navigating", navigating)
+        put("handsFree", HandsFree.enabled)
+        put("log", JSONArray(tripLog.takeLast(8)))
+    }.toString()
+
     // ───────────────────────── 工具 ─────────────────────────
 
     private fun launch(intent: Intent) {
@@ -1052,5 +1461,6 @@ object CarMate {
 
     private fun update() {
         onUpdate?.invoke()
+        if (DashServer.connected) DashServer.push(stateJson())
     }
 }

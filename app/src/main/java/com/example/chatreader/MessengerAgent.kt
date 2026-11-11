@@ -1,5 +1,7 @@
 package com.example.chatreader
 
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.graphics.Bitmap
@@ -131,14 +133,15 @@ object MessengerAgent {
     /**
      * 行車助理：只讀取某人的聊天室，讀完把結果交給 onResult（在主執行緒呼叫）。
      * 失敗或被停止時 onResult 收到 null。不會填字、不會送出。
+     * @param pagesUp 讀完目前畫面後再往上捲幾頁，把更早的訊息也讀進來（0 = 只讀目前畫面）
      */
-    fun startRead(target: String, onResult: (ChatSnapshot?) -> Unit): Boolean {
+    fun startRead(target: String, pagesUp: Int = 0, onResult: (ChatSnapshot?) -> Unit): Boolean {
         if (busy) {
             report("⚠️ 上一個任務還沒結束，請先按停止")
             return false
         }
         pendingRead = onResult
-        val ok = launch { service -> runRead(service, target.trim()) }
+        val ok = launch { service -> runRead(service, target.trim(), pagesUp) }
         if (!ok) pendingRead = null
         return ok
     }
@@ -642,16 +645,33 @@ object MessengerAgent {
 
     // ───────────────────────── 行車助理：只讀取 ─────────────────────────
 
-    private fun runRead(service: ChatReaderService, target: String) {
+    private fun runRead(service: ChatReaderService, target: String, pagesUp: Int = 0) {
         report("① 等待 Messenger 開啟…")
         waitForMessenger(service)
         val chatTitle = navigateToChat(service, target)
         sleep(800)
         report("④ 讀取對話…")
-        val root = root(service) ?: throw FailException("讀不到畫面")
+        var root = root(service) ?: throw FailException("讀不到畫面")
         val screen = Rect().also { root.getBoundsInScreen(it) }
-        val snapshot = MessengerParser.parse(root, screen.width())
-        if (snapshot.messages.isEmpty()) throw FailException("「$chatTitle」的聊天室畫面上沒有讀到訊息")
+        var snapshot = MessengerParser.parse(root, screen.width())
+        // 剛點進聊天室時訊息可能還在載入：多等幾次再讀
+        var tries = 0
+        while (snapshot.messages.isEmpty() && tries < 4) {
+            tries++
+            report("訊息還沒出現，再等一下（$tries/4）")
+            sleep(700)
+            root = root(service) ?: continue
+            snapshot = MessengerParser.parse(root, screen.width())
+        }
+        Log.i(TAG, "runRead：「$chatTitle」畫面上讀到 ${snapshot.messages.size} 則（等了 $tries 次），pagesUp=$pagesUp")
+        if (snapshot.messages.isEmpty()) {
+            // 畫面上只有讚、貼圖、圖片時讀不到文字：直接往上翻找文字訊息
+            report("畫面上沒有文字訊息，往上找")
+            snapshot = snapshot.copy(messages = readOlder(service, emptyList(), maxOf(pagesUp, 3), screen))
+            if (snapshot.messages.isEmpty()) throw FailException("「$chatTitle」的聊天室往上翻也沒有讀到文字訊息")
+        } else if (pagesUp > 0) {
+            snapshot = snapshot.copy(messages = readOlder(service, snapshot.messages, pagesUp, screen))
+        }
         val result = snapshot.copy(partnerName = snapshot.partnerName ?: chatTitle)
         main.post {
             val cb = pendingRead
@@ -659,6 +679,68 @@ object MessengerAgent {
             cb?.invoke(result)
         }
         finish("✅ 讀到「$chatTitle」${snapshot.messages.size} 則訊息")
+    }
+
+    /**
+     * 在聊天室裡往上捲，把更早的訊息接在前面（行車助理找很久以前的約定用）。
+     * Messenger 的訊息列表不接受無障礙的「往回捲」（2026-11-09 A55 實測：最大的可捲動節點是 GridView，
+     * 而且捲不動），所以改用手勢：在畫面中間由上往下滑，跟手指往上翻一樣。
+     * 需要 accessibility_service_config.xml 的 canPerformGestures="true"。
+     * 滑完沒有新訊息就停（到頂了）。
+     */
+    private fun readOlder(service: ChatReaderService, newest: List<ChatMessage>, pages: Int, screen: Rect): List<ChatMessage> {
+        val width = screen.width()
+        var merged = newest
+        for (p in 1..pages) {
+            if (!swipeDown(service, screen)) {
+                report("沒辦法在 Messenger 上滑動：請到手機的無障礙設定，把服務關掉再打開")
+                Log.w(TAG, "readOlder：dispatchGesture 失敗（canPerformGestures 還沒生效？）")
+                break
+            }
+            report("往上找更早的訊息（$p/$pages）")
+            sleep(900)
+            val r2 = root(service) ?: break
+            val older = MessengerParser.parse(r2, width).messages
+            val before = merged.size
+            merged = mergeOlder(older, merged)
+            Log.i(TAG, "readOlder：第 $p 頁讀到 ${older.size} 則，合併後 ${merged.size} 則")
+            if (merged.size == before) { report("往上沒有更早的訊息了"); break }
+        }
+        return merged
+    }
+
+    /** 在聊天室中間由上往下滑（看更早的訊息）。成功送出手勢回傳 true */
+    private fun swipeDown(service: ChatReaderService, screen: Rect): Boolean {
+        val x = screen.centerX().toFloat()
+        val y1 = screen.top + screen.height() * 0.30f      // 避開上面的標題列
+        val y2 = screen.top + screen.height() * 0.75f
+        val path = Path().apply { moveTo(x, y1); lineTo(x, y2) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 450))
+            .build()
+        val latch = CountDownLatch(1)
+        var done = false
+        val sent = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) { done = true; latch.countDown() }
+            override fun onCancelled(g: GestureDescription?) { latch.countDown() }
+        }, null)
+        if (!sent) return false
+        latch.await(3, TimeUnit.SECONDS)
+        return done
+    }
+
+    /** 把往上捲讀到的訊息接在前面：兩頁重疊的部分只留一份 */
+    private fun mergeOlder(older: List<ChatMessage>, newer: List<ChatMessage>): List<ChatMessage> {
+        fun key(m: ChatMessage) = "${m.fromMe}|${m.text}"
+        val max = minOf(older.size, newer.size)
+        for (k in max downTo 1) {
+            val tail = older.takeLast(k).map(::key)
+            val head = newer.take(k).map(::key)
+            if (tail == head) return older.dropLast(k) + newer
+        }
+        // 找不到重疊：整頁都是新的（或捲太多），直接接在前面；去掉完全相同的訊息
+        val seen = newer.map(::key).toSet()
+        return older.filter { key(it) !in seen } + newer
     }
 
     private fun pickReply(service: ChatReaderService, chatTitle: String, text: String) {

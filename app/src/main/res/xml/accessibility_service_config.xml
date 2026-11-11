@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- app/src/main/res/xml/accessibility_service_config.xml（2026-10-29 加 Facebook、Instagram） -->
+<!-- app/src/main/res/xml/accessibility_service_config.xml（2026-10-29 加 Facebook、Instagram；2026-11-09 加 canPerformGestures：Messenger 聊天室往上滑） -->
 <!-- packageNames：無障礙服務只看這些 App。
      com.facebook.orca = Messenger、com.google.android.apps.maps = Google 地圖、
      com.google.android.gms = Google Play 服務（地圖上跳出的「開啟定位」視窗屬於它）、
@@ -13,4 +13,5 @@
     android:accessibilityFlags="flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
     android:canTakeScreenshot="true"
+    android:canPerformGestures="true"
     android:notificationTimeout="100" />

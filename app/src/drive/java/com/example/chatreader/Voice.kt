@@ -58,8 +58,19 @@ object Voice {
         }
     }
 
+    /**
+     * 網頁車機（三站展示）接手聲音：手機不唸也不聽，改由電腦的喇叭唸、電腦的麥克風聽。
+     * 由網頁送 {"type":"hello","silent":true} 打開（DashServer → CarMate）。
+     */
+    @Volatile var silent = false
+
     /** 唸出來（排隊，不會打斷前一句）；then = 唸完之後要做的事 */
     fun speak(text: String, then: (() -> Unit)? = null) {
+        if (silent) {
+            // 不唸，但「唸完之後要做的事」照樣做；大約等網頁唸完（每字 0.2 秒）
+            then?.let { main.postDelayed(it, (text.length * 200L + 300L).coerceAtMost(8000L)) }
+            return
+        }
         val t = tts
         if (!ready || t == null) {
             then?.let { main.postDelayed(it, 500) }
@@ -92,6 +103,7 @@ object Voice {
 
     /** 開始聽一次；聽到的文字（或 null = 沒聽到）會在主執行緒交給 onResult */
     fun listen(prompt: String, onResult: (String?) -> Unit) {
+        if (silent) return   // 網頁車機負責聽（按住空白鍵說話），手機不開語音輸入
         // 免持模式：直接用背景聆聽，不跳出語音輸入畫面
         if (HandsFree.enabled) {
             AssistantBubble.say("🎤 $prompt")

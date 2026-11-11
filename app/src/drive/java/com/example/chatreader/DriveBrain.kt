@@ -12,13 +12,14 @@ import java.util.Locale
 
 /** 語音指令判斷結果 */
 data class DriveIntent(
-    val intent: String,      // appointment / go / late / send / eta / save_place / share_place / joke / talk / end_trip / home / chat
+    val intent: String,      // appointment / go / stop / late / send / eta / save_place / share_place / joke / talk / end_trip / home / chat
     val friend: String,
     val minutes: Int?,
     val message: String,
     val reply: String,
     val note: String,        // save_place：駕駛描述的地點，例如「右邊那家咖啡廳」
-    val place: String,       // go：要導航去的地點
+    val place: String,       // go：要導航去的地點；stop：中途要先去的地點
+    val dest: String = "",   // stop：最後的目的地（駕駛有說才有，沒說就沿用目前的導航）
 )
 
 /** 從聊天紀錄找到的約定 */
@@ -30,6 +31,7 @@ data class Appointment(
     val time: String,
     val timeHHmm: String,    // 約定時間 24 小時制 HH:mm，不知道為空字串（用來算會不會遲到）
     val speech: String,      // 要唸給駕駛聽的一句話
+    val evidence: String = "",   // 聊天裡決定地點的那一句原文（網頁標亮「AI 從這句找到的」）
 )
 
 object DriveBrain {
@@ -44,8 +46,9 @@ object DriveBrain {
         駕駛要求這些事時，一定要歸到對應的意圖，絕對不要歸到 chat，也不要回答做不到。
 
         從下面的意圖選一個：
-        - appointment：想知道或前往跟某人約好的地點（例：「我今天跟澤約哪裡」「帶我去跟孟澤約的地方」「今天要去跟孟澤吃飯」）
+        - appointment：想知道或前往跟某人約好的地點（例：「我今天跟澤約哪裡」「帶我去跟孟澤約的地方」「今天要去跟孟澤吃飯」「加完油帶我去跟孟澤約的地方」）
         - go：要導航到一個明確的地點，不是跟人約的（例：「帶我去高雄車站」「導航到最近的加油站」）
+        - stop：要在路上先去另一個地方、加一個中途停靠點，或「先去 A 再去 B」（例：「先去加油站」「途中先繞去學校」「在去逢甲夜市之前可以先經過學校嗎」「先去學校再去逢甲夜市」）。【目前行程】有導航時，「我要先去／順便去 某地」都算 stop，不是 go。最後要去的是「跟某人約的地方」時用 appointment，不是 stop
         - late：要通知某人自己會遲到（例：「跟澤說我會晚十分鐘」）
         - send：要傳一般訊息給某人（例：「跟澤說我到了」）
         - eta：問還要多久、幾點會到、還有多遠、會不會遲到（例：「還要多久」「我來得及嗎」）
@@ -59,14 +62,15 @@ object DriveBrain {
 
         欄位規則：
         - friend：對象名字，照駕駛說的寫（可以是任何人，不限聯絡人）；如果和【聯絡人】裡的名字同音或很像，改用聯絡人的寫法；沒提到對象但【目前行程】有對象，就用行程的對象；都沒有就空字串。
-        - place：go 時要去的地點（給 Google 地圖搜尋用）。其他意圖為空字串。
+        - place：go 時要去的地點；stop 時是「中途先去」的那個地點（A）。給 Google 地圖搜尋用。其他意圖為空字串。
+        - dest：stop 時，駕駛有說最後要去哪（B）就填，沒說就空字串。其他意圖為空字串。
         - minutes：遲到幾分鐘，數字；沒說就 null。
         - message：late 和 send 時，以「我」的口吻寫成可以直接傳出的訊息，繁體中文、台灣口語、30 字內，不要編造原因或沒說過的事實。其他意圖為空字串。
         - reply：chat 時給駕駛的簡短口語回答（30 字內，適合唸出來，不要 emoji）。其他意圖為空字串。
         - note：save_place 時，駕駛描述的地點特徵（例：「右邊那家咖啡廳」）；沒說就空字串。其他意圖為空字串。
 
         只輸出 JSON，不要任何說明，不要 markdown：
-        {"intent":"late","friend":"澤","minutes":10,"message":"抱歉，我大概會晚 10 分鐘到 🙏","reply":"","note":"","place":""}
+        {"intent":"late","friend":"澤","minutes":10,"message":"抱歉，我大概會晚 10 分鐘到 🙏","reply":"","note":"","place":"","dest":""}
     """.trimIndent()
 
     private val APPOINTMENT_PROMPT = """
@@ -79,9 +83,10 @@ object DriveBrain {
         - speech：要唸給正在開車的駕駛聽的一句話，繁體中文、口語、35 字內、不要 emoji，最後問要不要幫他導航。
           例如：「你跟澤約今晚 7 點，在駁二的大魯閣餐廳，要幫你導航嗎？」
         - 找不到約定時 found 為 false，speech 說明找不到，例如：「我在你跟澤的聊天裡沒找到約定的地點。」
+        - evidence：聊天紀錄裡決定最後地點的那一句，照原文抄（不含「誰：」），找不到就空字串。
 
         只輸出 JSON，不要任何說明，不要 markdown：
-        {"found":true,"place":"地點名稱","map_query":"高雄 駁二 地點名稱","time":"今晚 7 點","time_24h":"19:00","speech":"…"}
+        {"found":true,"place":"地點名稱","map_query":"高雄 駁二 地點名稱","time":"今晚 7 點","time_24h":"19:00","speech":"…","evidence":"…"}
     """.trimIndent()
 
     /** 判斷語音指令 */
@@ -102,6 +107,7 @@ object DriveBrain {
             reply = o.optString("reply", "").trim(),
             note = o.optString("note", "").trim(),
             place = o.optString("place", "").trim(),
+            dest = o.optString("dest", "").trim(),
         )
     }
 
@@ -121,6 +127,7 @@ object DriveBrain {
                 .let { t -> Regex("""^(\d{1,2}):(\d{2})$""").find(t)?.let { "%02d:%s".format(it.groupValues[1].toInt(), it.groupValues[2]) } ?: "" },
             speech = o.optString("speech", "").trim()
                 .ifEmpty { if (place.isNotEmpty()) "你跟${friend}約在$place，要幫你導航嗎？" else "我沒找到約定的地點。" },
+            evidence = o.optString("evidence", "").trim(),
         )
     }
 

@@ -1,0 +1,965 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CoDriver 網頁車機</title>
+<!--
+  CoDriver 網頁車機 v2（2026-11-04：三站互動展示）
+  網址參數：
+    ?station=1  遲到救星（A55 實機、真的傳 Messenger）
+    ?station=2  約定偵探（模擬器、模擬聊天）
+    ?station=3  貼心副駕（模擬器、主動關心＋AI 路由）
+    不加 = 一般模式（雛形，沒有任務）
+    &phone=IP:8765  直接開檔案時指定手機位址
+  操作：↑↓←→ 開車、按住空白鍵說話、A 自動駕駛、Enter 開始
+  工作人員：Shift+T 塞車、Shift+G 油量 12%、Shift+F 疲勞、Shift+L 遲到檢查、Shift+R 回開場
+  手機 CoDriver App = 車上的電腦（AI、真的 Messenger）；這個網頁 = 車機螢幕＋模擬的車。
+-->
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --panel2:#1f2840; --line:#2c3754; --text:#e8ecf5; --muted:#9aa6c2;
+          --accent:#7b9cff; --ok:#4fd1a5; --warn:#ffb454; --bad:#ff6b6b; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:#000; color:var(--text);
+              font-family:"Microsoft JhengHei","PingFang TC","Noto Sans TC",sans-serif; overflow:hidden; }
+  #app { position:relative; display:grid; grid-template-rows:62vh 38vh; height:100vh; }
+  #sim { position:relative; background:#bcd6ee; }
+  #sim canvas { display:block; width:100%; height:100%; }
+  .chip { background:rgba(15,20,32,.75); color:#fff; padding:6px 12px; border-radius:999px; font-size:15px; }
+  #hud { position:absolute; right:16px; top:12px; display:flex; gap:8px; }
+  #apBadge { display:none; background:rgba(31,122,92,.9); }
+  #turn { position:absolute; left:50%; top:14px; transform:translateX(-50%); background:rgba(20,60,160,.88); color:#fff;
+          padding:10px 22px; border-radius:14px; font-size:22px; font-weight:700; display:none; }
+  #banner { position:absolute; left:50%; top:74px; transform:translateX(-50%); background:rgba(180,90,20,.92); color:#fff;
+            padding:10px 22px; border-radius:14px; font-size:20px; font-weight:700; display:none; }
+  #mission { position:absolute; left:16px; top:12px; width:340px; background:rgba(15,20,32,.82); border-radius:16px; padding:14px 16px; display:none; }
+  #mission h3 { margin:0 0 8px; font-size:20px; }
+  .step { font-size:15px; color:#8f9bb8; padding:3px 0; }
+  .step.now { color:#fff; font-size:18px; font-weight:700; }
+  .step.done { color:var(--ok); }
+  #tryRow { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+  .try { background:#2f4fd1; color:#fff; border:none; border-radius:999px; padding:6px 12px; font-size:15px; cursor:pointer; font-family:inherit; }
+  #subs { position:absolute; left:50%; bottom:46px; transform:translateX(-50%); width:min(900px, 70%); text-align:center; }
+  #subHeard { font-size:17px; color:#e8ecf5; text-shadow:0 1px 3px #000; min-height:1.4em; }
+  #subSay { display:inline-block; background:rgba(15,20,32,.82); color:#fff; font-size:24px; font-weight:700; padding:8px 18px; border-radius:12px; line-height:1.4; }
+  #subSay:empty { display:none; }
+  #mic { position:absolute; left:50%; bottom:10px; transform:translateX(-50%); font-size:15px; color:#fff; background:rgba(15,20,32,.75); padding:4px 14px; border-radius:999px; }
+  #mic.on { background:#c0392b; }
+  #legend { position:absolute; right:16px; bottom:10px; font-size:14px; color:#fff; background:rgba(15,20,32,.7); padding:6px 12px; border-radius:10px; }
+  #unit { background:var(--bg); display:grid; grid-template-columns:3fr 4fr 3fr; gap:10px; padding:10px; min-height:0; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:12px 14px; overflow:hidden;
+           display:flex; flex-direction:column; gap:8px; min-height:0; }
+  .title { font-size:13px; color:var(--muted); letter-spacing:1px; display:flex; justify-content:space-between; }
+  #mini { width:100%; flex:1; min-height:0; background:#0b101b; border-radius:10px; }
+  #chats { display:none; flex:1; min-height:0; overflow:hidden; font-size:13px; line-height:1.55; }
+  .chat { background:#0b101b; border-radius:10px; padding:5px 10px; margin-bottom:5px; line-height:1.45; transition:opacity .3s; }
+  .chat.dim { opacity:.4; }
+  .chat b { color:var(--accent); }
+  .chat .hl { background:#5a4512; color:#ffd88a; border-radius:4px; padding:0 4px; }
+  .chat .why { color:var(--warn); font-size:12px; }
+  #eta { font-size:16px; }
+  #pipe { display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; }
+  .cell { background:var(--panel2); border-radius:10px; padding:8px; font-size:13px; min-height:64px; transition:background .3s; }
+  .cell .k { color:var(--muted); font-size:12px; }
+  .cell .v { white-space:pre-line; }
+  .cell.lit { background:#183f35; }
+  .cell.lit.last { background:#22325f; }
+  #say { font-size:20px; line-height:1.45; font-weight:600; min-height:1.5em; }
+  #ask { display:none; background:var(--panel2); border-radius:12px; padding:8px 10px; }
+  #ask .q { font-size:14px; color:var(--warn); margin-bottom:6px; }
+  button { background:var(--panel2); color:var(--text); border:1px solid var(--line); border-radius:10px; padding:7px 12px;
+           font-size:15px; cursor:pointer; font-family:inherit; }
+  button:hover { border-color:var(--accent); }
+  button.primary { background:#2f4fd1; border-color:#2f4fd1; }
+  button.go { background:#1f7a5c; border-color:#1f7a5c; }
+  button.no { background:#6b2b35; border-color:#6b2b35; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  #cmd { flex:1; min-width:120px; background:#0b101b; color:var(--text); border:1px solid var(--line); border-radius:10px;
+         padding:8px 10px; font-size:15px; font-family:inherit; }
+  .card { background:var(--panel2); border-radius:12px; padding:8px 10px; font-size:14px; line-height:1.5; }
+  .bar { height:10px; background:#0b101b; border-radius:6px; overflow:hidden; }
+  .bar > div { height:100%; background:var(--ok); }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:14px; }
+  #conn { font-size:12px; }
+  #log { font-size:12px; color:var(--muted); line-height:1.5; overflow:hidden; flex:1; }
+  .speed { font-size:34px; font-weight:800; }
+  .overlay { position:absolute; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; text-align:center;
+             background:rgba(8,12,22,.72); color:#fff; z-index:10; cursor:pointer; }
+  .overlay h1 { font-size:64px; margin:0 0 12px; }
+  .overlay p { font-size:26px; margin:6px 0; max-width:1100px; line-height:1.5; text-wrap:balance; }
+  #app.attract #subs, #app.attract #mic, #app.attract #legend { display:none; }
+  .overlay .start { margin-top:28px; font-size:30px; background:#2f4fd1; padding:14px 40px; border-radius:999px; }
+  .overlay .sub { font-size:18px; color:#c9d2ea; }
+  #endList { font-size:24px; line-height:1.8; text-align:left; margin:12px 0; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sim">
+    <div id="mission"><h3 id="mTitle"></h3><div id="mSteps"></div><div id="tryRow"></div></div>
+    <div id="hud"><span class="chip" id="apBadge">🚗 自動駕駛中</span><span class="chip" id="hudSpeed">0 km/h</span><span class="chip" id="hudFuel">⛽ 80%</span><span class="chip" id="hudClock">--:--</span></div>
+    <div id="turn"></div>
+    <div id="banner"></div>
+    <div id="subs"><div id="subHeard"></div><div id="subSay"></div></div>
+    <div id="mic">🎙 按住空白鍵說話</div>
+    <div id="legend">↑↓←→ 開車　按住空白鍵 說話　A 自動駕駛　Enter 開始</div>
+  </div>
+  <div id="unit">
+    <div class="panel">
+      <div class="title"><span id="leftTitle">🧭 導航</span><span id="navState">沒有導航</span></div>
+      <div id="chats"></div>
+      <canvas id="mini"></canvas>
+      <div id="eta">說「帶我去逢甲夜市」或「帶我去加油站」</div>
+    </div>
+    <div class="panel">
+      <div class="title"><span>🚗 CoDriver 副駕・AI 怎麼想</span><span id="conn">⚪ 未連線</span></div>
+      <div id="pipe">
+        <div class="cell" id="c1"><div class="k">① 聽到</div><div class="v"></div></div>
+        <div class="cell" id="c2"><div class="k">② 交給誰</div><div class="v"></div></div>
+        <div class="cell" id="c3"><div class="k">③ 做了什麼</div><div class="v"></div></div>
+        <div class="cell" id="c4"><div class="k">④ 結果</div><div class="v"></div></div>
+      </div>
+      <div id="say">按「上車」開始旅程</div>
+      <div id="ask"><div class="q" id="askQ"></div><div class="row" id="askBtns"></div></div>
+      <div class="row" id="freeBtns">
+        <button class="primary" onclick="action('board')">🚗 上車</button>
+        <button onclick="action('listen')">🎤 手機聽我說</button>
+        <button onclick="action('end')">🏁 下車</button>
+        <button onclick="action('stop')">⏹ 停止</button>
+        <label style="font-size:13px;color:var(--muted)"><input type="checkbox" id="webVoice"> 網頁也唸</label>
+        <label style="font-size:13px;color:var(--muted)"><input type="checkbox" id="navVoice" checked> 導航語音</label>
+      </div>
+      <div class="row">
+        <input id="cmd" placeholder="也可以打字跟副駕說，例如：帶我去逢甲夜市" onkeydown="if(event.key==='Enter'||event.key==='Escape'){event.stopPropagation();if(event.key==='Enter')sendCmd();this.blur()}">
+        <button onclick="sendCmd()">送出指令</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="title"><span>✉️ 訊息與車況</span><span id="clock2"></span></div>
+      <div class="row" style="justify-content:space-between">
+        <div><span class="speed" id="speed">0</span> km/h</div>
+        <div style="flex:1;margin-left:14px"><div style="font-size:13px;color:var(--muted)">油量 <span id="fuelTxt">80%</span></div><div class="bar"><div id="fuelBar" style="width:80%"></div></div></div>
+      </div>
+      <div class="grid2">
+        <div class="card">❄️ 冷氣 <b id="ac">24</b> 度・風量 <b id="fan">2</b></div>
+        <div class="card">🪟 車窗 <b id="win">關</b>・💡 車燈 <b id="lights">關</b></div>
+      </div>
+      <div class="card" id="appt">📍 還沒有約定</div>
+      <div class="card" id="msg" style="display:none"></div>
+      <div id="log"></div>
+    </div>
+  </div>
+  <div class="overlay" id="attract" onclick="onEnter()">
+    <div class="sub" id="aNo"></div>
+    <h1 id="aTitle"></h1>
+    <p id="aTag"></p>
+    <div class="start">按 Enter 或點這裡開始</div>
+    <p class="sub">約 2～3 分鐘・照著左上角的提示做就好</p>
+  </div>
+  <div class="overlay" id="endcard" onclick="toAttract()">
+    <h1>🎉 任務完成</h1>
+    <p>你剛剛體驗了：</p>
+    <div id="endList"></div>
+    <p id="endNext"></p>
+    <p class="sub" id="endCount"></p>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// ───────────────────────── 連線（手機 CoDriver App） ─────────────────────────
+const params = new URLSearchParams(location.search);
+let BASE = location.protocol.startsWith('http') ? location.origin : '';
+if (params.get('phone')) BASE = 'http://' + params.get('phone').replace(/^https?:\/\//, '');
+if (!BASE) {
+  const p = prompt('手機 CoDriver 的位址（App 紀錄裡的「網頁車機」那行，例如 192.168.43.1:8765）；留空 = 離線測試');
+  if (p) BASE = 'http://' + p.trim().replace(/^https?:\/\//, '');
+}
+let connected = false;
+let state = {};
+
+function post(obj) {
+  if (!BASE || !connected) return Promise.resolve();
+  return fetch(BASE + '/api', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(obj) })
+    .catch(() => {});
+}
+function connect() {
+  if (!BASE) { setConn(false, '離線測試'); return; }
+  const es = new EventSource(BASE + '/events');
+  es.addEventListener('state', e => {
+    if (!connected) {
+      connected = true; setConn(true);
+      // 展示站：聲音交給電腦（手機不唸、不聽）
+      post({ type: 'hello', silent: !!ST, station: ST ? Number(params.get('station')) : 0 });
+    }
+    try { onState(JSON.parse(e.data)); } catch (err) { console.warn(err); }
+  });
+  es.onerror = () => { connected = false; setConn(false, '重新連線中…'); };
+}
+function setConn(ok, why) {
+  document.getElementById('conn').textContent = ok ? '🟢 已連線車上電腦' : '⚪ ' + (why || '未連線');
+}
+function action(name) {
+  if (!connected) { localSay('（離線）要連上車上電腦（手機）才能用這個功能'); return; }
+  post({ type: 'action', name });
+}
+function sendCmd(text) {
+  const box = document.getElementById('cmd');
+  const t = (text ?? box.value).trim();
+  if (!t) return;
+  box.value = '';
+  touch();
+  if (ST && mission.phase === 'attract') startMission();
+  if (mission.phase === 'run' && t.includes('取消') && curStep() && curStep().cancelOk) mission.flags.cancelled = true;
+  if (connected) { post({ type: 'cmd', text: t }); document.getElementById('subHeard').textContent = '你：' + t; return; }
+  // 離線測試：「去 X」「帶我去 X」直接在網頁規劃並出發
+  const m = t.match(/(?:去|到|導航到|帶我去)\s*(.+)$/);
+  if (m) { localPlan(m[1].trim()); } else localSay('（離線）只能測導航，例如：帶我去逢甲夜市');
+}
+function localSay(t) { document.getElementById('say').textContent = t; document.getElementById('subSay').textContent = t; }
+
+// ───────────────────────── 三站設定 ─────────────────────────
+const STATIONS = {
+  1: {
+    no: '1 號站', name: '⏰ 遲到救星', fuel: 80,
+    tagline: '你跟孟澤約在逢甲夜市，路上卻堵車了——讓副駕幫你告訴他。說「送出」，訊息才會真的傳出去。',
+    steps: [
+      { text: '說「帶我去跟孟澤約的地方」', tries: ['帶我去跟孟澤約的地方'], done: s => !!s.appt },
+      { text: '說「好」，讓副駕規劃路線', tries: ['好'], done: () => !!nav.dest },
+      { text: '再說「好」，開始導航', tries: ['好'], done: () => nav.active },
+      { text: '開車（或按 A 自動駕駛）', tries: [], done: () => mission.flags.accident && !!(state.ask || '').length },
+      { text: '副駕問要不要通知孟澤：說「好」', tries: ['好'], done: s => !!s.msg },
+      { text: '確認訊息：說「送出」或「取消」', tries: ['送出', '取消'], cancelOk: true, done: () => mission.flags.sent || mission.flags.cancelled },
+    ],
+    summary: ['副駕從路況算出你會遲到，主動問你要不要通知', '訊息由車上電腦在真的 Messenger 裡填好', '按不按「送出」，永遠由你決定'],
+    next: '想看 AI 怎麼從聊天裡找到地點？去 2 號站「約定偵探」',
+  },
+  2: {
+    no: '2 號站', name: '🔍 約定偵探', fuel: 80,
+    tagline: '你不記得跟朋友約在哪——只要說「去跟誰約的地方」，副駕自己從聊天裡找。',
+    steps: [
+      { text: '看左下的聊天，說「帶我去跟小美約的地方」（也可以選別人）', tries: ['帶我去跟小美約的地方', '帶我去跟阿凱約的地方', '帶我去跟孟澤約的地方'], done: s => !!s.appt },
+      { text: '說「好」，讓副駕規劃路線', tries: ['好'], done: () => !!nav.dest },
+      { text: '再說「好」，開始導航', tries: ['好'], done: () => nav.active },
+      { text: '開到目的地（按 A 自動駕駛）', tries: [], done: () => nav.arrived },
+    ],
+    chats: {
+      '孟澤': ['孟澤：今晚 7 點逢甲夜市見？', '我：好啊', '孟澤：那我先去排隊'],
+      '小美': ['小美：明天下午先約高鐵站？', '我：好啊，幾點？', '小美：三點！', '小美：欸改去咖啡廳好了，高鐵站人太多'],
+      '阿凱': ['阿凱：報告還沒做完欸', '我：那要約討論嗎', '阿凱：那下課後學校圖書館前面'],
+    },
+    summary: ['你只說了「跟誰」，副駕就自己去讀聊天', 'AI 看得懂改過的約定，跟著最後的決定走', '找到地點後直接幫你導航'],
+    next: '想看真的訊息送出去？去 1 號站「遲到救星」',
+  },
+  3: {
+    no: '3 號站', name: '🤝 貼心副駕', fuel: 30, drain: 10,
+    tagline: '開一趟車去高鐵站，你只管開——看副駕在你開口之前就想到什麼。',
+    steps: [
+      { text: '說「帶我去高鐵站」', tries: ['帶我去高鐵站'], done: () => !!nav.dest },
+      { text: '說「好」，開始導航', tries: ['好'], done: () => nav.active },
+      { text: '開車（或按 A 自動駕駛），副駕會主動提醒加油：說「好」', tries: ['好'], done: () => !!(nav.via && nav.viaDone) },
+      { text: '說「好熱，冷氣開強一點」，看 AI 交給誰', tries: ['好熱，冷氣開強一點'], done: s => s.car && (s.car.ac < mission.startAc || s.car.fan > mission.startFan) },
+      { text: '開一陣子，副駕會主動陪你：說「笑話」', tries: ['笑話', '不用'], done: () => mission.flags.joke },
+      { text: '開到高鐵站', tries: [], done: () => nav.arrived },
+    ],
+    summary: ['油快沒了、開累了，副駕先開口', '車控交給車上的模型，找路交給雲端', '你只管開車'],
+    next: '想看 AI 怎麼從聊天裡找到地點？去 2 號站「約定偵探」',
+  },
+  4: {   // 完整旅程（給教授／評審看全部功能，A55 實機＋真的 Messenger）
+    no: '完整展示', name: '🚗 完整旅程', fuel: 12,
+    tagline: '油快沒了，晚上還跟孟澤有約——從上車到抵達，看副駕一路幫你想到。',
+    steps: [
+      { text: '上車：副駕發現油不夠，問要不要先去加油：說「好」', tries: ['好'], done: () => !!(nav.dest && nav.dest.gas) },
+      { text: '再說「好」，開始導航', tries: ['好'], done: () => nav.active },
+      { text: '開往加油站的路上說「加完油帶我去跟孟澤約的地方」', tries: ['加完油帶我去跟孟澤約的地方'], done: s => !!s.appt },
+      { text: '副駕找到約定：說「好」，路線改成加完油再去', tries: ['好'], done: () => !!(nav.via && nav.via.gas && nav.dest && !nav.dest.gas) },
+      { text: '開到加油站加油（按 A 自動駕駛）', tries: [], done: () => !!(nav.via && nav.viaDone) },
+      { text: '路上塞車，副駕問要不要通知孟澤：說「好」', tries: ['好'], done: s => !!s.msg },
+      { text: '確認訊息：說「送出」或「取消」', tries: ['送出', '取消'], cancelOk: true, done: () => mission.flags.sent || mission.flags.cancelled },
+      { text: '開到約定的地方', tries: [], done: () => nav.arrived },
+    ],
+    summary: ['油不夠，副駕上車就先提醒', '開到一半臨時加行程，路線自己接好', '從 Messenger 聊天找到約定的地方', '路上塞車，副駕算出會遲到、幫你通知', '每一則訊息都等你說「送出」'],
+    next: '想看 AI 怎麼讀懂改過的約定？去 2 號站「約定偵探」',
+  },
+};
+const ST = STATIONS[Number(params.get('station'))] || null;
+if (ST) document.getElementById('webVoice').checked = true;
+
+// ───────────────────────── 任務流程 ─────────────────────────
+const mission = { phase: ST ? 'attract' : 'free', step: 0, flags: {}, startAc: 24, startFan: 2, lastInput: performance.now(), navStartAt: 0, pathLen0: 0, endAt: 0 };
+function curStep() { return ST && ST.steps[mission.step]; }
+function touch() { mission.lastInput = performance.now(); }
+
+function showOverlay(id, on) {
+  document.getElementById(id).style.display = on ? 'flex' : 'none';
+  if (id === 'attract') document.getElementById('app').classList.toggle('attract', on);
+}
+function resetLocal() {
+  car.x = 0; car.z = 3 * B; car.yaw = 0; car.v = 0; car.fuel = ST ? ST.fuel : 80;
+  nav.dest = null; nav.via = null; nav.viaDone = true; nav.active = false; nav.arrived = false; nav.delay = 0;
+  const flex = POIS.find(p => p.flex);
+  if (flex.name !== flex.baseName) { flex.name = flex.baseName; scene.remove(flex.sprite); flex.sprite = makeLabel(flex.name); flex.sprite.position.set(flex.x, 18, flex.labelZ); scene.add(flex.sprite); }
+  speechSynthesis.cancel(); lastSpoken = ''; pipeHeard = pipeRoute = pipeSay = pipeLastSay = '';
+  ['c1', 'c2', 'c3', 'c4'].forEach(id => { const c = document.getElementById(id); c.classList.remove('lit', 'last'); c.querySelector('.v').textContent = ''; });
+  document.getElementById('subHeard').textContent = ''; document.getElementById('subSay').textContent = '';
+}
+function toAttract() {
+  if (!ST) return;
+  mission.phase = 'attract'; mission.step = 0; mission.flags = {}; state = {};
+  resetLocal();
+  post({ type: 'action', name: 'reset' });
+  showOverlay('endcard', false); showOverlay('attract', true);
+  document.getElementById('mission').style.display = 'none';
+  setAutopilot(true);
+}
+function startMission() {
+  mission.phase = 'run'; mission.step = 0; mission.flags = {}; touch();
+  resetLocal(); setAutopilot(false);
+  showOverlay('attract', false);
+  document.getElementById('mission').style.display = 'block';
+  mission.startAc = (state.car && state.car.ac) || 24;
+  mission.startFan = (state.car && state.car.fan) ?? 2;
+  state = {};   // 等手機重置後推來新的狀態，避免上一位的約定讓步驟直接打勾
+  post({ type: 'action', name: 'reset' });
+  // 先把這一站的油量告訴手機，再上車（4 號站一上車就要知道油不夠）
+  setTimeout(() => { post({ type: 'vehicle', fuel: Math.round(car.fuel), speed: 0 }); setTimeout(() => post({ type: 'action', name: 'board' }), 200); }, 400);
+  renderMission();
+}
+function onEnter() {
+  touch();
+  if (!ST) return;
+  if (mission.phase === 'attract') startMission();
+  else if (mission.phase === 'end') toAttract();
+}
+function renderMission() {
+  if (!ST) return;
+  document.getElementById('mTitle').textContent = ST.name;
+  document.getElementById('mSteps').innerHTML = ST.steps.map((s, i) =>
+    `<div class="step ${i < mission.step ? 'done' : i === mission.step ? 'now' : ''}">${i < mission.step ? '✔' : i === mission.step ? '▶' : '・'} ${esc(s.text)}</div>`).join('');
+  const st = curStep();
+  document.getElementById('tryRow').innerHTML = st && st.tries.length
+    ? '<span style="font-size:13px;color:#c9d2ea;width:100%">試著說（或直接點）：</span>' + st.tries.map(t => `<button class="try" onclick="sendCmd('${t}')">${esc(t)}</button>`).join('')
+    : '';
+}
+function finishMission() {
+  mission.phase = 'end'; mission.endAt = performance.now();
+  document.getElementById('endList').innerHTML = ST.summary.map(t => '✔ ' + esc(t)).join('<br>');
+  document.getElementById('endNext').textContent = ST.next;
+  showOverlay('endcard', true);
+}
+function missionTick(now) {
+  if (!ST) return;
+  if (mission.phase === 'end') {
+    const left = 20 - Math.floor((now - mission.endAt) / 1000);
+    document.getElementById('endCount').textContent = `${Math.max(0, left)} 秒後回到開場（按 Enter 或點畫面馬上回去）`;
+    if (left <= 0) toAttract();
+    return;
+  }
+  if (mission.phase !== 'run') return;
+  // 閒置太久 → 回開場（自動駕駛中放寬到 90 秒）
+  if (now - mission.lastInput > (autopilot ? 90000 : 45000)) { toAttract(); return; }
+  // 步驟完成就往下
+  let moved = false;
+  while (curStep() && curStep().done(state)) { mission.step++; moved = true; }
+  if (moved) { renderMission(); if (!curStep()) { finishMission(); return; } }
+  // 各站的劇本
+  if (nav.active && !mission.navStartAt) { mission.navStartAt = now; mission.pathLen0 = pathLen(currentPath()); }
+  if (!nav.active) mission.navStartAt = 0;
+  if (ST === STATIONS[1] && nav.active && !mission.flags.accident && mission.pathLen0 > 0) {
+    const done = 1 - pathLen(currentPath()) / mission.pathLen0;
+    if (done > 0.33) {
+      mission.flags.accident = true; nav.delay += 12; nav.lastReport = 0;   // 馬上回報新的到達時間，手機才算得出會遲到
+      showBanner('⚠ 前方事故，車流變慢', 5000);
+      setTimeout(() => action('late'), 1500);   // 副駕主動問要不要通知朋友
+    }
+  }
+  // 4 號站：加完油、往約定地點開了 30% 之後塞車（跟 1 號站一樣讓副駕算出會遲到）
+  if (ST === STATIONS[4] && nav.active && nav.via && nav.viaDone && nav.dest && !nav.dest.gas && !mission.flags.accident) {
+    const left = pathLen(currentPath());
+    if (!mission.flags.leg2) mission.flags.leg2 = left;
+    else if (1 - left / mission.flags.leg2 > 0.3) {
+      mission.flags.accident = true; nav.delay += 12; nav.lastReport = 0;
+      showBanner('⚠ 前方事故，車流變慢', 5000);
+      setTimeout(() => action('late'), 1500);
+    }
+  }
+  if ((ST === STATIONS[1] || ST === STATIONS[4]) && (state.log || []).some(l => l.includes('已送出'))) mission.flags.sent = true;
+  if (ST === STATIONS[3]) {
+    const st = curStep();
+    if (st && st.tries.includes('笑話') && !mission.flags.fatigueSent) {
+      mission.flags.fatigueSent = true;
+      setTimeout(() => action('fatigue'), 3000);
+    }
+    if ((state.ask || '').includes('笑話')) mission.flags.jokeAsked = true;
+    if (mission.flags.jokeAsked && !(state.ask || '').includes('笑話')) mission.flags.joke = true;
+  }
+}
+let bannerTimer = 0;
+function showBanner(t, ms) {
+  const b = document.getElementById('banner');
+  b.textContent = t; b.style.display = 'block';
+  clearTimeout(bannerTimer); bannerTimer = setTimeout(() => { b.style.display = 'none'; }, ms || 3000);
+}
+function note(t) { showBanner(t, 2500); }
+
+// ───────────────────────── 按住空白鍵說話（電腦麥克風） ─────────────────────────
+let rec = null, recText = '';
+function pttStart() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = document.getElementById('mic');
+  if (!SR) { note('這個瀏覽器不支援語音辨識，請用 Chrome，或點「試著說」'); return; }
+  if (rec) return;
+  recText = '';
+  rec = new SR(); rec.lang = 'zh-TW'; rec.interimResults = true; rec.continuous = true;
+  rec.onresult = e => {
+    recText = [...e.results].map(r => r[0].transcript).join('');
+    document.getElementById('subHeard').textContent = '🎙 ' + recText;
+  };
+  rec.onerror = () => {};
+  rec.onend = () => { const t = recText.trim(); rec = null; mic.classList.remove('on'); mic.textContent = '🎙 按住空白鍵說話'; if (t) sendCmd(t); };
+  mic.classList.add('on'); mic.textContent = '🎙 聽你說…放開就送出';
+  try { rec.start(); } catch (e) { rec = null; }
+}
+function pttStop() { if (rec) { try { rec.stop(); } catch (e) {} } }
+
+// ───────────────────────── 顯示車上電腦（手機）傳來的狀態 ─────────────────────────
+let lastSpoken = '', pipeHeard = '', pipeRoute = '', pipeSay = '', pipeLastSay = '';
+function speak(t) {
+  if (!document.getElementById('webVoice').checked) return;
+  const u = new SpeechSynthesisUtterance(t.replace(/https?:\/\/\S+/g, '').replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}]/gu, ''));
+  u.lang = 'zh-TW'; speechSynthesis.speak(u);
+}
+// 導航語音（轉彎提示）：手機不知道模擬城市的路口，所以由網頁自己唸
+let navVoiceKey = '', navVoiceStage = 0, navVoiceSince = 0;
+function speakNav(t) {
+  const box = document.getElementById('navVoice');
+  if (box && !box.checked) return;
+  const u = new SpeechSynthesisUtterance(t);
+  u.lang = 'zh-TW'; u.rate = 1.1; speechSynthesis.speak(u);
+}
+function onState(s) {
+  const prev = state;
+  state = s;
+  const $ = id => document.getElementById(id);
+  $('say').textContent = s.say || '';
+  if (s.say && s.say !== prev.say) $('subSay').textContent = s.say;
+  if (s.heard && s.heard !== prev.heard) $('subHeard').textContent = '你：' + s.heard;
+  if (s.say && s.say !== lastSpoken && !s.say.endsWith('…')) { lastSpoken = s.say; speak(s.say); }
+  renderPipe(s);
+  renderAsk(s.ask || '');
+  const c = s.car || {};
+  $('ac').textContent = c.ac ?? '-'; $('fan').textContent = c.fan ?? '-';
+  $('win').textContent = c.window ? '開' : '關'; $('lights').textContent = c.lights ? '開' : '關';
+  if (s.appt) $('appt').innerHTML = `📍 跟 <b>${esc(s.appt.friend || '')}</b> 約 ${esc(s.appt.time || '')}，在 <b>${esc(s.appt.place || '')}</b>`;
+  else $('appt').textContent = '📍 還沒有約定';
+  if (s.msg) {
+    $('msg').style.display = 'block';
+    $('msg').innerHTML = `✉️ 傳給 <b>${esc(s.msg.friend)}</b>${s.msg.demo ? '（模擬）' : ''}：「${esc(s.msg.text)}」<br><span style="color:var(--muted)">${esc(s.agent || '')}</span>`;
+  } else $('msg').style.display = 'none';
+  $('log').innerHTML = (s.log || []).slice(-5).map(esc).join('<br>');
+  renderChats();
+  handleNav(s.nav);
+}
+/** AI 怎麼想：聽到 → 交給誰 → 做了什麼 → 結果，每句話一格一格亮起來 */
+function renderPipe(s) {
+  const cell = (id, text, lit, last) => {
+    const c = document.getElementById(id);
+    c.querySelector('.v').textContent = text || '';
+    c.classList.toggle('lit', !!lit); c.classList.toggle('last', !!last);
+  };
+  // 聽到新的一句：跟「上一份狀態」的回覆比，回覆變了才算這句的結果（手機可能同一次就把聽到＋回覆一起推來）
+  const prevSay = pipeLastSay; pipeLastSay = s.say;
+  if (s.heard && s.heard !== pipeHeard) { pipeHeard = s.heard; pipeRoute = ''; pipeSay = prevSay; cell('c1', s.heard, true); cell('c2', '判斷中…', false); cell('c3', '', false); cell('c4', '', false); }
+  if (!s.heard) pipeHeard = '';   // 手機重置後 heard 會清空，下一位說同一句也能重新亮起
+  if (!pipeHeard) return;
+  const label = (s.routeLabel || '').replace('🔀', '').trim();
+  if (label && !label.includes('判斷中') && label !== pipeRoute) {
+    pipeRoute = label;
+    const where = label.includes('手機') ? '🚘 車上的模型' : '☁️ 雲端 AI';
+    cell('c2', `${where}\n${(s.routeDetail || '').replace(/・/g, ' ')}`, true);
+  }
+  if (s.say && s.say !== pipeSay && !s.say.endsWith('…')) {
+    // 只看「你說的那句」之後的紀錄，找最後一筆動作
+    const lg = s.log || [], from = lg.map(l => l.includes('你：')).lastIndexOf(true);
+    const lastLog = lg.slice(from + 1).reverse().find(l => !l.includes('CarMate：') && !l.includes('路由') && !l.includes('展示重置')) || '（直接回答）';
+    cell('c3', lastLog.replace(/^\S+\s+/, '').slice(0, 40), true);
+    cell('c4', s.say.slice(0, 50), true, true);
+  }
+}
+function renderAsk(prompt) {
+  const box = document.getElementById('ask');
+  if (!prompt) { box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  document.getElementById('askQ').textContent = '等你回答：' + prompt;
+  const opts = prompt.includes('送出') ? [['送出', 'go'], ['取消', 'no']]
+    : prompt.includes('通知') ? [['好', 'go'], ['通知', 'primary'], ['取消', 'no']]
+    : prompt.includes('笑話') ? [['笑話', 'primary'], ['聊天', 'primary'], ['不用', 'no']]
+    : prompt.includes('名字') ? []
+    : [['好', 'go'], ['不要', 'no']];
+  document.getElementById('askBtns').innerHTML = opts.map(([t, cls]) =>
+    `<button class="${cls}" onclick="sendCmd('${t}')">${t}</button>`).join('');
+}
+/** 2 號站：導航開始前，左邊顯示三個朋友的（模擬）聊天；找到約定後標亮是哪一句 */
+function renderChats() {
+  const box = document.getElementById('chats'), mini = document.getElementById('mini');
+  const show = ST && ST.chats && !nav.active && mission.phase !== 'attract';
+  box.style.display = show ? 'block' : 'none';
+  mini.style.display = show ? 'none' : 'block';
+  document.getElementById('leftTitle').textContent = show ? '💬 手機聊天（模擬）' : '🧭 導航';
+  document.getElementById('eta').style.display = show ? 'none' : 'block';
+  if (!show) return;
+  const a = state.appt;
+  // 手機有送模擬聊天（assets/demo_chats.json）就用手機的，跟 AI 讀到的內容一定一樣
+  const chats = state.demoChats && Object.keys(state.demoChats).length ? state.demoChats : ST.chats;
+  box.innerHTML = Object.entries(chats).map(([name, lines]) => {
+    const mine = a && a.friend && (a.friend.includes(name) || name.includes(a.friend));
+    let hit = -1;
+    // AI 有回傳依據句就用它；沒有就找最後一句提到地點的
+    const ev = (a && a.evidence || '').replace(/^[^：:]{1,8}[：:]/, '').trim();
+    if (mine && ev) for (let i = lines.length - 1; i >= 0 && hit < 0; i--) if (lines[i].includes(ev) || ev.includes(lines[i].replace(/^[^：:]{1,8}[：:]/, '').trim())) hit = i;
+    if (mine && hit < 0) {
+      const place = a.place || '';
+      const keys = [place, ...POIS.map(p => p.baseName).filter(n => place.includes(n))].filter(Boolean);
+      for (let i = lines.length - 1; i >= 0 && hit < 0; i--) if (keys.some(k => k && lines[i].includes(k))) hit = i;
+    }
+    const dim = a && a.friend && !mine ? ' dim' : '';
+    return `<div class="chat${dim}"${mine ? ' id="chatHit"' : ''}><b>${esc(name)}</b>${name === '小美' ? ' <span style="color:var(--warn);font-size:12px">（改過約定，考考 AI）</span>' : ''}<br>` +
+      lines.map((l, i) => i === hit ? `<span class="hl">${esc(l)}</span> <span class="why">← AI 從這句找到的</span>` : esc(l)).join('<br>') + '</div>';
+  }).join('');
+  const h = document.getElementById('chatHit'); if (h) h.scrollIntoView({ block: 'nearest' });
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch])); }
+
+
+// ───────────────────────── 方塊城市 ─────────────────────────
+const N = 6;            // 6×6 個街區
+const B = 60;           // 街區間距（世界單位）
+const ROAD = 7;         // 道路半寬
+const M_PER_UNIT = 25;  // 導航換算：1 單位 = 25 公尺（城市約 9 公里寬）
+const ETA_KMH = 36;     // 估算車程用的平均時速
+
+// 地點（街區 i, j；入口在街區南側道路中間）
+const POIS = [
+  { name: '逢甲夜市', i: 4, j: 1, color: 0xff8a3d },
+  { name: '加油站', i: 2, j: 4, color: 0xe63946, gas: true },
+  { name: '加油站', i: 5, j: 5, color: 0xe63946, gas: true },
+  { name: '高鐵站', i: 5, j: 2, color: 0x4361ee },
+  { name: '休息站', i: 0, j: 5, color: 0x2a9d8f },
+  { name: '學校', i: 1, j: 1, color: 0x8338ec },
+  { name: '咖啡廳', i: 3, j: 3, color: 0x9c6644 },
+  { name: '目的地', i: 4, j: 4, color: 0xffbe0b, flex: true },   // 模擬城市裡沒有的地點，借用這裡
+];
+POIS.forEach(p => { p.x = p.i * B + B / 2; p.z = (p.j + 1) * B; p.baseName = p.name; });
+
+const simEl = document.getElementById('sim');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+simEl.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xbcd6ee);
+scene.fog = new THREE.Fog(0xbcd6ee, 60, 260);
+const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 600);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x667088, 0.95));
+const sun = new THREE.DirectionalLight(0xffffff, 0.6); sun.position.set(80, 120, 40); scene.add(sun);
+
+// 地面與道路
+const size = N * B;
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(size + 200, size + 200), new THREE.MeshLambertMaterial({ color: 0x8fb38a }));
+ground.rotation.x = -Math.PI / 2; ground.position.set(size / 2, -0.02, size / 2); scene.add(ground);
+const roadMat = new THREE.MeshLambertMaterial({ color: 0x3d4250 });
+const lineMat = new THREE.MeshBasicMaterial({ color: 0xf2f2f2 });
+for (let k = 0; k <= N; k++) {
+  const h = new THREE.Mesh(new THREE.PlaneGeometry(size + ROAD * 2, ROAD * 2), roadMat);
+  h.rotation.x = -Math.PI / 2; h.position.set(size / 2, 0, k * B); scene.add(h);
+  const v = new THREE.Mesh(new THREE.PlaneGeometry(ROAD * 2, size + ROAD * 2), roadMat);
+  v.rotation.x = -Math.PI / 2; v.position.set(k * B, 0.001, size / 2); scene.add(v);
+  for (let t = 0; t < size; t += 8) {   // 中線虛線
+    const a = new THREE.Mesh(new THREE.PlaneGeometry(4, 0.3), lineMat); a.rotation.x = -Math.PI / 2; a.position.set(t + 2, 0.01, k * B); scene.add(a);
+    const b = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 4), lineMat); b.rotation.x = -Math.PI / 2; b.position.set(k * B, 0.01, t + 2); scene.add(b);
+  }
+}
+// 建築（固定亂數，每次長得一樣）
+let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+const palette = [0xd9d4c7, 0xc9c2b2, 0xb7c4cf, 0xe3d5c3, 0xa9b4bd, 0xcfc6d9];
+for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+  const poi = POIS.find(p => p.i === i && p.j === j);
+  const x0 = i * B + ROAD + 3, z0 = j * B + ROAD + 3, w = B - 2 * ROAD - 6;
+  if (poi) {
+    const h = 10;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w * 0.8, h, w * 0.6), new THREE.MeshLambertMaterial({ color: poi.color }));
+    m.position.set(x0 + w / 2, h / 2, z0 + w * 0.55); scene.add(m);
+    poi.labelZ = z0 + w * 0.55; poi.sprite = makeLabel(poi.name); poi.sprite.position.set(poi.x, 18, poi.labelZ); scene.add(poi.sprite);
+    continue;
+  }
+  for (let a = 0; a < 2; a++) for (let b = 0; b < 2; b++) {
+    const h = 6 + rnd() * 28, bw = w / 2 - 3;
+    const m = new THREE.Mesh(new THREE.BoxGeometry(bw, h, bw), new THREE.MeshLambertMaterial({ color: palette[Math.floor(rnd() * palette.length)] }));
+    m.position.set(x0 + bw / 2 + a * (bw + 6), h / 2, z0 + bw / 2 + b * (bw + 6)); scene.add(m);
+  }
+}
+function makeLabel(text) {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = 'rgba(20,24,40,0.85)'; g.fillRect(0, 0, 512, 128);
+  g.fillStyle = '#fff'; g.font = 'bold 64px "Microsoft JhengHei","PingFang TC",sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text.slice(0, 7), 256, 66);
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c) }));
+  s.scale.set(16, 4, 1); return s;
+}
+// 車頭（固定在鏡頭前，讓人有開車的感覺）
+const hood = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.4, 1.6), new THREE.MeshLambertMaterial({ color: 0x223a6b }));
+hood.position.set(0, -1.05, -1.9); camera.add(hood); scene.add(camera);
+
+// ───────────────────────── 車子 ─────────────────────────
+const car = { x: 0, z: 3 * B, yaw: 0, v: 0, fuel: 80, odo: 0 };   // yaw 0 = 往東（+x）
+const keys = {};
+addEventListener('keydown', e => {
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') { touch(); return; }   // 打字中：只算有人在，不當開車鍵
+  const k = e.key.toLowerCase();
+  touch();
+  if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
+  if (e.shiftKey) {   // 工作人員測試鍵（要加 Shift，避免來試的人亂按）
+    if (k === 't') { nav.delay += 10; note('（測試）塞車，預計多 10 分鐘'); }
+    if (k === 'g') { car.fuel = 12; note('（測試）油量降到 12%'); }
+    if (k === 'f') action('fatigue');
+    if (k === 'l') action('late');
+    if (k === 'r') toAttract();
+    return;
+  }
+  if (k === ' ') { if (!e.repeat) pttStart(); return; }
+  if (k === 'a') { setAutopilot(!autopilot); return; }
+  if (k === 'enter') { onEnter(); return; }
+  if (k.startsWith('arrow')) {
+    keys[k] = true;
+    if (autopilot && mission.phase !== 'attract' && k !== 'arrowup') { setAutopilot(false); note('你接手了，自動駕駛關閉'); }
+  }
+});
+addEventListener('keyup', e => { const k = e.key.toLowerCase(); if (k === ' ') { pttStop(); return; } keys[k] = false; });
+// 按完按鈕就放掉焦點，免得空白鍵（說話）又按到按鈕
+document.addEventListener('click', e => { touch(); if (e.target.tagName === 'BUTTON') e.target.blur(); });
+
+// ───────────────────────── 自動駕駛（沿導航路線開；開場畫面時在城市裡繞） ─────────────────────────
+let autopilot = false;
+let wander = null;
+function setAutopilot(on) {
+  autopilot = on;
+  document.getElementById('apBadge').style.display = on && mission.phase !== 'attract' ? 'inline-block' : 'none';
+}
+function autoPath() {
+  if (nav.dest && nav.active && !nav.arrived) return currentPath();
+  if (!wander || Math.hypot(car.x - wander.x, car.z - wander.z) < 10) {
+    const cand = POIS.filter(p => p !== wander);
+    wander = cand[Math.floor(Math.random() * cand.length)];
+  }
+  return legPath(car.x, car.z, wander, true);
+}
+function autoInput() {
+  const pts = autoPath();
+  if (pts.length < 2) return { throttle: 0, brake: car.v > 0.5 ? 1 : 0, steer: 0 };
+  let need = 9, tx = pts[pts.length - 1].x, tz = pts[pts.length - 1].z;
+  for (let k = 1; k < pts.length; k++) {
+    const a = pts[k - 1], b = pts[k], L = Math.hypot(b.x - a.x, b.z - a.z);
+    if (L >= need) { tx = a.x + (b.x - a.x) * need / L; tz = a.z + (b.z - a.z) * need / L; break; }
+    need -= L;
+  }
+  let err = Math.atan2(tz - car.z, tx - car.x) - car.yaw;
+  err = Math.atan2(Math.sin(err), Math.cos(err));
+  const target = 15 * Math.max(0.3, 1 - Math.abs(err) / 1.1);
+  return { throttle: car.v < target ? 1 : 0, brake: car.v > target + 2 ? 0.6 : 0, steer: Math.max(-1, Math.min(1, err * 2.2)) };
+}
+
+function onRoad(x, z) {
+  if (x < -ROAD || z < -ROAD || x > size + ROAD || z > size + ROAD) return false;
+  const mx = ((x % B) + B) % B, mz = ((z % B) + B) % B;
+  const r = ROAD - 1.2;
+  return mx < r || mx > B - r || mz < r || mz > B - r;
+}
+function drive(dt) {
+  const gp = navigator.getGamepads ? [...navigator.getGamepads()].find(Boolean) : null;   // 之後接方向盤用
+  let throttle = keys['arrowup'] ? 1 : 0;
+  let brake = keys['arrowdown'] ? 1 : 0;
+  let steer = (keys['arrowright'] ? 1 : 0) - (keys['arrowleft'] ? 1 : 0);
+  if (gp) {
+    if (Math.abs(gp.axes[0]) > 0.05) steer = gp.axes[0];
+    if (gp.buttons[7]) throttle = Math.max(throttle, gp.buttons[7].value);
+    if (gp.buttons[6]) brake = Math.max(brake, gp.buttons[6].value);
+  }
+  if (autopilot && !brake && !steer) { const a = autoInput(); throttle = Math.max(throttle, a.throttle); brake = a.brake; steer = a.steer; }
+  if (car.fuel <= 0) throttle = 0;
+  const MAX = 22, REV = -6;
+  if (throttle) car.v += 9 * throttle * dt;
+  if (brake) car.v -= (car.v > 0.5 ? 18 : 6) * brake * dt;
+  if (!throttle && !brake) car.v *= Math.pow(0.6, dt);
+  car.v = Math.max(REV, Math.min(MAX, car.v));
+  if (Math.abs(car.v) < 0.05 && !throttle) car.v = 0;
+  car.yaw += steer * 1.5 * dt * Math.max(-1, Math.min(1, car.v / 6));
+  const nx = car.x + Math.cos(car.yaw) * car.v * dt, nz = car.z + Math.sin(car.yaw) * car.v * dt;
+  if (onRoad(nx, nz)) { car.x = nx; car.z = nz; }
+  else if (onRoad(nx, car.z)) { car.x = nx; car.v *= 0.9; }
+  else if (onRoad(car.x, nz)) { car.z = nz; car.v *= 0.9; }
+  else car.v = -car.v * 0.2;   // 撞到
+  const moved = Math.abs(car.v) * dt;
+  car.odo += moved;
+  // 3 號站：加油前油量掉得比較快，才會在路上觸發「順路加油」
+  // 掉到 13% 就恢復正常速度；展示時油量最低停在 8%，不會真的沒油拋錨
+  const fast = ST && ST.drain && mission.phase === 'run' && nav.active && !(nav.via && nav.viaDone) && car.fuel > 13;
+  car.fuel = Math.max(ST ? Math.min(8, car.fuel) : 0, car.fuel - moved * 0.015 * (fast ? ST.drain : 1));
+}
+
+// ───────────────────────── 導航（模擬城市） ─────────────────────────
+const nav = { id: -1, active: false, dest: null, via: null, viaDone: true, path: [], delay: 0, lastReport: 0, arrived: false };
+const node = (i, j) => ({ x: i * B, z: j * B, i, j });
+function nearestNode(x, z) { return node(Math.max(0, Math.min(N, Math.round(x / B))), Math.max(0, Math.min(N, Math.round(z / B)))); }
+function gridPath(a, b, ban) {   // BFS：格子上的最短路線（只走路口）；ban = 第一步不能走回去的路口（不在路中間迴轉）
+  const key = (i, j) => i + ',' + j, prev = {}, q = [[a.i, a.j]]; prev[key(a.i, a.j)] = null;
+  while (q.length) {
+    const [i, j] = q.shift();
+    if (i === b.i && j === b.j) break;
+    for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const ni = i + di, nj = j + dj;
+      if (ni < 0 || nj < 0 || ni > N || nj > N || key(ni, nj) in prev) continue;
+      if (ban && i === a.i && j === a.j && ni === ban.i && nj === ban.j) continue;
+      prev[key(ni, nj)] = [i, j]; q.push([ni, nj]);
+    }
+  }
+  const out = []; let cur = [b.i, b.j];
+  while (cur) { out.unshift(node(cur[0], cur[1])); cur = prev[key(cur[0], cur[1])]; }
+  return out;
+}
+const entryNode = p => node(p.i, p.j + 1);   // 地點入口旁的路口
+function legPath(fx, fz, p, fromCar) {
+  const start = fromCar ? aheadNode() : nearestNode(fx, fz);
+  if (fromCar) {   // 地點就在眼前這段路上（車子跟下一個路口之間）：直接開過去
+    const hx = Math.cos(car.yaw), hz = Math.sin(car.yaw), vx = p.x - fx, vz = p.z - fz;
+    const along = vx * hx + vz * hz, side = Math.abs(vx * hz - vz * hx);
+    if (side < 4 && along > 0 && along <= Math.hypot(start.x - fx, start.z - fz) + 1) return [{ x: fx, z: fz }, { x: p.x, z: p.z }];
+  }
+  // 從車子出發時，不讓路線在前方路口叫你掉頭；要往回走就繞一個街區（跟真的導航一樣）
+  let ban = null;
+  if (fromCar) {
+    const cx = Math.cos(car.yaw), cz = Math.sin(car.yaw);
+    ban = Math.abs(cx) > Math.abs(cz) ? { i: start.i - Math.sign(cx), j: start.j } : { i: start.i, j: start.j - Math.sign(cz) };
+  }
+  return [{ x: fx, z: fz }, ...gridPath(start, entryNode(p), ban), { x: p.x, z: p.z }];
+}
+// 車子前方最近的路口（避免一出發就叫你迴轉）
+function aheadNode() {
+  const fx = Math.cos(car.yaw), fz = Math.sin(car.yaw);
+  const cands = [];
+  for (const i of [Math.floor(car.x / B), Math.ceil(car.x / B)]) for (const j of [Math.floor(car.z / B), Math.ceil(car.z / B)]) {
+    if (i < 0 || j < 0 || i > N || j > N) continue;
+    const n = node(i, j), dx = n.x - car.x, dz = n.z - car.z, d = Math.hypot(dx, dz);
+    if (d < 2 || (dx * fx + dz * fz) / d > 0.5) cands.push([d, n]);
+  }
+  cands.sort((a, b) => a[0] - b[0]);
+  return cands.length ? cands[0][1] : nearestNode(car.x, car.z);
+}
+function pathLen(pts) { let d = 0; for (let k = 1; k < pts.length; k++) d += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].z - pts[k - 1].z); return d; }
+function findPoi(dest, avoid) {   // avoid：已經被用掉的地點（停靠點不能跟目的地搶同一塊「目的地」區）
+  const d = (dest || '').replace(/\s/g, '');
+  if (d.includes('加油')) return nearestGas(car.x, car.z);
+  const hit = POIS.find(p => !p.flex && !p.gas && (d.includes(p.name) || p.name.includes(d)));
+  if (hit) return hit;
+  if (!d) return null;
+  const flex = POIS.find(p => p.flex);
+  if (avoid === flex) return null;   // 城市裡沒有的地點：借用「目的地」區，招牌改成這個名字
+  flex.name = d.slice(0, 7);
+  scene.remove(flex.sprite); flex.sprite = makeLabel(flex.name); flex.sprite.position.set(flex.x, 18, flex.labelZ); scene.add(flex.sprite);
+  return flex;
+}
+function nearestGas(x, z) { return POIS.filter(p => p.gas).sort((a, b) => pathLen(legPath(x, z, a, true)) - pathLen(legPath(x, z, b, true)))[0]; }
+function bestGasFor(dest) {
+  return POIS.filter(p => p.gas).sort((a, b) =>
+    (pathLen(legPath(car.x, car.z, a, true)) + pathLen(legPath(a.x, a.z, dest))) - (pathLen(legPath(car.x, car.z, b, true)) + pathLen(legPath(b.x, b.z, dest))))[0];
+}
+function currentPath() {
+  if (!nav.dest) return [];
+  if (nav.via && !nav.viaDone) return [...legPath(car.x, car.z, nav.via, true), ...legPath(nav.via.x, nav.via.z, nav.dest).slice(1)];
+  return legPath(car.x, car.z, nav.dest, true);
+}
+function etaInfo() {
+  const km = pathLen(currentPath()) * M_PER_UNIT / 1000;
+  const minutes = Math.max(1, Math.round(km / ETA_KMH * 60 + nav.delay));
+  const t = new Date(Date.now() + minutes * 60000);
+  return { km: Math.round(km * 10) / 10, minutes, arrival: String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') };
+}
+function handleNav(n) {
+  if (!n) return;
+  if (n.id !== nav.id) {
+    nav.id = n.id; nav.active = false; nav.arrived = false; nav.delay = 0;
+    nav.dest = findPoi(n.dest);
+    if (!nav.dest) { post({ type: 'nav', id: n.id, status: 'failed', dest: n.dest }); return; }
+    if (n.via) {   // 中途停靠點（「先去學校再去逢甲夜市」）
+      nav.via = n.via.includes('加油') ? bestGasFor(nav.dest) : findPoi(n.via, nav.dest);
+      if (!nav.via) { nav.dest = null; post({ type: 'nav', id: n.id, status: 'failed', dest: n.via }); return; }
+    } else {
+      nav.via = n.viaGas && !nav.dest.gas ? bestGasFor(nav.dest) : null;
+    }
+    nav.viaDone = !nav.via;
+    const e = etaInfo();
+    post({ type: 'nav', id: n.id, status: 'planned', dest: nav.dest.name, via: nav.via ? nav.via.name : '', ...e });
+  }
+  if (n.cmd === 'cancel' || n.cmd === 'done') { if (n.cmd === 'cancel') { nav.dest = null; } nav.active = false; return; }
+  if (n.start && !nav.active && !nav.arrived) nav.active = true;
+}
+function localPlan(dest) {   // 離線測試用
+  nav.id++; nav.dest = findPoi(dest); nav.via = null; nav.viaDone = true; nav.delay = 0; nav.arrived = false; nav.active = !!nav.dest;
+  localSay(nav.dest ? `（離線）導航到 ${nav.dest.name}，預計 ${etaInfo().minutes} 分鐘` : '找不到地點');
+}
+function navTick(now) {
+  const turnEl = document.getElementById('turn');
+  const navState = document.getElementById('navState'), etaEl = document.getElementById('eta');
+  if (!nav.dest || nav.arrived) {
+    turnEl.style.display = 'none';
+    navState.textContent = nav.arrived ? '已抵達' : '沒有導航';
+    if (nav.arrived) etaEl.textContent = `🏁 已抵達 ${nav.dest.name}`;
+    return;
+  }
+  const e = etaInfo();
+  etaEl.innerHTML = `${nav.active ? '▶' : '⏸ 預覽'} <b>${esc(nav.dest.name)}</b>${nav.via && !nav.viaDone ? '（先到' + nav.via.name + '）' : ''}<br>還有 ${e.km} 公里・約 ${e.minutes} 分鐘・預計 <b>${e.arrival}</b> 到`;
+  navState.textContent = nav.active ? '導航中' : '等你確認';
+  if (!nav.active) { turnEl.style.display = 'none'; return; }
+  // 抵達判斷
+  const target = nav.via && !nav.viaDone ? nav.via : nav.dest;
+  if (Math.hypot(car.x - target.x, car.z - target.z) < 9) {
+    if (target === nav.via) {
+      nav.viaDone = true;
+      if (nav.via.gas) { car.fuel = 95; showBanner('⛽ 加滿油了', 2500); }
+      else showBanner(`📍 到了${nav.via.name}，接著去${nav.dest.name}`, 3000);
+      post({ type: 'nav', id: nav.id, status: 'via', via: nav.via.name, gas: !!nav.via.gas });
+    } else {
+      nav.arrived = true; nav.active = false;
+      if (nav.dest.gas) { car.fuel = 95; showBanner('⛽ 加滿油了', 2500); }
+      post({ type: 'nav', id: nav.id, status: 'arrived', dest: nav.dest.name });
+      if (!connected) localSay(`（離線）已抵達 ${nav.dest.name}`);
+      return;
+    }
+  }
+  // 下一個轉彎
+  const pts = currentPath();
+  let msg = '直走';
+  let acc = 0, turnKey = '', turnMeters = 0, turnWord = '';
+  for (let k = 1; k < pts.length - 1; k++) {
+    acc += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].z - pts[k - 1].z);
+    const d1x = pts[k].x - pts[k - 1].x, d1z = pts[k].z - pts[k - 1].z, d2x = pts[k + 1].x - pts[k].x, d2z = pts[k + 1].z - pts[k].z;
+    const l1 = Math.hypot(d1x, d1z), l2 = Math.hypot(d2x, d2z);
+    if (l1 < 1 || l2 < 1) continue;
+    if (k === 1 && l1 < 3) continue;   // 車子就停在路口上，方向以車頭為準，不報迴轉
+    const cross = (d1x * d2z - d1z * d2x) / (l1 * l2), dot = (d1x * d2x + d1z * d2z) / (l1 * l2);
+    if (dot > 0.7) continue;
+    const meters = Math.round(acc * M_PER_UNIT / 50) * 50;
+    const dist = meters >= 1000 ? (meters / 1000).toFixed(1) + ' 公里後' : meters > 0 ? meters + ' 公尺後' : '前方';
+    msg = dot < -0.7 ? `${dist}迴轉 ↩` : `${dist}${cross > 0 ? '右轉 ➡' : '⬅ 左轉'}`;
+    turnKey = `${nav.id}|${Math.round(pts[k].x)},${Math.round(pts[k].z)}`;
+    turnMeters = meters;
+    turnWord = dot < -0.7 ? '迴轉' : cross > 0 ? '右轉' : '左轉';
+    break;
+  }
+  if (!turnKey) {   // 後面沒有轉彎了：報目的地距離
+    const left = Math.round(pathLen(target === nav.via ? legPath(car.x, car.z, nav.via, true) : pts) * M_PER_UNIT / 50) * 50;
+    msg = left <= 100 ? `🏁 ${target.name}就在前方` : `直走・${target.name}還有 ${left >= 1000 ? (left / 1000).toFixed(1) + ' 公里' : left + ' 公尺'}`;
+    turnKey = `${nav.id}|end|${target.name}`; turnMeters = left; turnWord = '';
+  }
+  turnEl.textContent = msg; turnEl.style.display = 'block';
+  // 每個路口唸兩次：遠一點先預告（「300 公尺後右轉」），快到時再提醒（「前方右轉」）
+  if (turnKey !== navVoiceKey) { navVoiceKey = turnKey; navVoiceStage = 0; navVoiceSince = now; }
+  if (turnKey && now - navVoiceSince > 800) {   // 同一個提示穩定 0.8 秒才唸（轉彎途中路線會短暫跳動）
+    const far = turnMeters >= 1000 ? (turnMeters / 1000).toFixed(1) + ' 公里' : turnMeters + ' 公尺';
+    if (navVoiceStage === 0 && turnMeters > 150) {
+      speakNav(turnWord ? far + '後' + turnWord : '沿著道路直走，' + far + '後抵達' + target.name);
+      navVoiceStage = 1;
+    } else if (navVoiceStage < 2 && turnMeters <= 100) {
+      speakNav(turnWord === '迴轉' ? '請迴轉' : turnWord ? '前方' + turnWord : target.name + '就在前方');
+      navVoiceStage = 2;
+    }
+  }
+  if (now - nav.lastReport > 2000) {
+    nav.lastReport = now;
+    post({ type: 'nav', id: nav.id, status: 'progress', minutesLeft: e.minutes, kmLeft: e.km, arrival: e.arrival });
+  }
+}
+
+// ───────────────────────── 3D 路線與小地圖 ─────────────────────────
+let routeGroup = new THREE.Group(); scene.add(routeGroup);
+let routeKey = '';
+function drawRoute3D(pts) {
+  const key = nav.active + '|' + pts.slice(1).map(p => Math.round(p.x) + ',' + Math.round(p.z)).join(';');
+  if (key === routeKey) return;
+  routeKey = key;
+  scene.remove(routeGroup); routeGroup = new THREE.Group(); scene.add(routeGroup);
+  if (!nav.active) return;
+  const mat = new THREE.MeshBasicMaterial({ color: 0x3d7bff, transparent: true, opacity: 0.45 });
+  for (let k = 1; k < pts.length; k++) {
+    const a = pts[k - 1], b = pts[k], len = Math.hypot(b.x - a.x, b.z - a.z);
+    if (len < 0.5) continue;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(len, 2.2), mat);
+    m.rotation.x = -Math.PI / 2; m.rotation.z = -Math.atan2(b.z - a.z, b.x - a.x);
+    m.position.set((a.x + b.x) / 2, 0.03, (a.z + b.z) / 2); routeGroup.add(m);
+  }
+}
+const mini = document.getElementById('mini'), mg = mini.getContext('2d');
+function drawMini(pts) {
+  const w = mini.width = mini.clientWidth * devicePixelRatio, h = mini.height = mini.clientHeight * devicePixelRatio;
+  const pad = 14 * devicePixelRatio, s = Math.min(w, h) - pad * 2, k = s / (size + ROAD * 2);
+  const ox = (w - s) / 2 + ROAD * k, oz = (h - s) / 2 + ROAD * k;
+  const X = x => ox + x * k, Z = z => oz + z * k;
+  mg.fillStyle = '#0b101b'; mg.fillRect(0, 0, w, h);
+  mg.strokeStyle = '#3a4560'; mg.lineWidth = ROAD * 2 * k * 0.6;
+  for (let q = 0; q <= N; q++) { mg.beginPath(); mg.moveTo(X(0), Z(q * B)); mg.lineTo(X(size), Z(q * B)); mg.stroke(); mg.beginPath(); mg.moveTo(X(q * B), Z(0)); mg.lineTo(X(q * B), Z(size)); mg.stroke(); }
+  if (pts.length > 1) {
+    mg.strokeStyle = nav.active ? '#3d7bff' : '#7b9cff88'; mg.lineWidth = 4 * devicePixelRatio; mg.setLineDash(nav.active ? [] : [8, 6]);
+    mg.beginPath(); mg.moveTo(X(pts[0].x), Z(pts[0].z)); pts.forEach(p => mg.lineTo(X(p.x), Z(p.z))); mg.stroke(); mg.setLineDash([]);
+  }
+  mg.font = `${11 * devicePixelRatio}px "Microsoft JhengHei",sans-serif`; mg.textAlign = 'center';
+  POIS.forEach(p => {
+    mg.fillStyle = '#' + p.color.toString(16).padStart(6, '0');
+    mg.beginPath(); mg.arc(X(p.x), Z(p.z - B / 2), 5 * devicePixelRatio, 0, Math.PI * 2); mg.fill();
+    mg.fillStyle = '#cfd6e8'; mg.fillText(p.name, X(p.x), Z(p.z - B / 2) - 8 * devicePixelRatio);
+  });
+  mg.save(); mg.translate(X(car.x), Z(car.z)); mg.rotate(car.yaw);
+  mg.fillStyle = '#4fd1a5'; mg.beginPath(); const c = 7 * devicePixelRatio; mg.moveTo(c, 0); mg.lineTo(-c, c * 0.7); mg.lineTo(-c * 0.5, 0); mg.lineTo(-c, -c * 0.7); mg.closePath(); mg.fill();
+  mg.restore();
+}
+
+
+// ───────────────────────── 主迴圈 ─────────────────────────
+function resize() { const r = simEl.getBoundingClientRect(); renderer.setSize(r.width, r.height, false); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+let last = performance.now(), lastVehicle = 0, lastMini = 0;
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  drive(dt);
+  camera.position.set(car.x, 1.4, car.z);
+  camera.lookAt(car.x + Math.cos(car.yaw) * 10, 1.1, car.z + Math.sin(car.yaw) * 10);
+  navTick(now);
+  missionTick(now);
+  const pts = nav.dest && !nav.arrived ? currentPath() : [];
+  drawRoute3D(pts);
+  if (now - lastMini > 100) { lastMini = now; drawMini(pts); }
+  const kmh = Math.round(Math.abs(car.v) * 3);
+  const fuel = Math.round(car.fuel);
+  document.getElementById('speed').textContent = kmh;
+  document.getElementById('hudSpeed').textContent = kmh + ' km/h';
+  document.getElementById('hudFuel').textContent = '⛽ ' + fuel + '%';
+  document.getElementById('fuelTxt').textContent = fuel + '%';
+  const bar = document.getElementById('fuelBar'); bar.style.width = fuel + '%'; bar.style.background = fuel <= 15 ? 'var(--bad)' : 'var(--ok)';
+  const t = new Date(), hhmm = String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+  document.getElementById('hudClock').textContent = hhmm; document.getElementById('clock2').textContent = hhmm;
+  if (now - lastVehicle > 1000 && mission.phase !== 'attract') { lastVehicle = now; post({ type: 'vehicle', fuel, speed: kmh }); }
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+// 展示站：隱藏雛形用的按鈕，顯示開場畫面
+if (ST) {
+  document.getElementById('freeBtns').style.display = 'none';
+  document.getElementById('aNo').textContent = ST.no;
+  document.getElementById('aTitle').textContent = ST.name;
+  document.getElementById('aTag').textContent = ST.tagline;
+  toAttract();
+} else {
+  document.getElementById('legend').textContent = '↑↓←→ 開車　按住空白鍵 說話　A 自動駕駛　Shift+T 塞車　Shift+G 油量 12%';
+}
+connect();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
