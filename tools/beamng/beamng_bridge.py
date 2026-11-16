@@ -18,10 +18,18 @@ BeamNG → CoDriver 橋接程式（2026-11-11，里程碑 2＋3）
 用法（Anaconda Prompt 或 cmd）：
     python beamng_bridge.py
     python beamng_bridge.py --port 4444 --phone http://127.0.0.1:8765
+
+監聽位址（2026-11-16，DGX 三台展示）：
+    單機（遊戲和橋接同一台）：預設 --listen 127.0.0.1，只收本機的 OutGauge
+    雙機（A 台遊戲 → B 台橋接）：B 台用 --listen 0.0.0.0，A 台 BeamNG 的 OutGauge 位址設成 B 台的 IP
+    參數也可以用環境變數給（docker-compose 用）：
+        CODRIVER_OUTGAUGE_LISTEN、CODRIVER_OUTGAUGE_PORT、CODRIVER_PHONE
+    命令列參數優先於環境變數。
 按 Ctrl+C 結束。只用 Python 內建的套件，不用另外安裝。
 """
 import argparse
 import json
+import os
 import socket
 import struct
 import time
@@ -68,17 +76,23 @@ def post(phone, obj, timeout=1.0):
 
 
 def main():
+    env = os.environ.get
     ap = argparse.ArgumentParser(description="BeamNG OutGauge → CoDriver")
-    ap.add_argument("--port", type=int, default=4444, help="BeamNG OutGauge 的 port（預設 4444）")
-    ap.add_argument("--phone", default="http://127.0.0.1:8765", help="手機 CoDriver 的位址（adb forward 後是 127.0.0.1:8765）")
+    ap.add_argument("--listen", default=env("CODRIVER_OUTGAUGE_LISTEN", "127.0.0.1"),
+                    help="收 OutGauge 的位址：127.0.0.1 = 只收本機（預設）；0.0.0.0 = 也收別台電腦送來的（雙機模式）")
+    ap.add_argument("--port", type=int, default=int(env("CODRIVER_OUTGAUGE_PORT", "4444")),
+                    help="BeamNG OutGauge 的 port（預設 4444）")
+    ap.add_argument("--phone", default=env("CODRIVER_PHONE", "http://127.0.0.1:8765"),
+                    help="手機 CoDriver 的位址（adb forward 後是 127.0.0.1:8765）")
     ap.add_argument("--jam-kmh", type=float, default=10.0, help="低於這個時速算走走停停")
     ap.add_argument("--jam-sec", type=float, default=20.0, help="持續幾秒算塞車")
     a = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("127.0.0.1", a.port))
+    sock.bind((a.listen, a.port))
     sock.settimeout(1.0)
-    print(f"橋接啟動：BeamNG OutGauge 127.0.0.1:{a.port} → 手機 {a.phone}（Ctrl+C 結束）")
+    print(f"橋接啟動：BeamNG OutGauge {a.listen}:{a.port} → 手機 {a.phone}（Ctrl+C 結束）")
+    sources = set()          # 收過資料的來源 IP（雙機模式時確認是 A 台送來的）
 
     fuel = FuelFilter()
     speed = 0.0
@@ -92,7 +106,10 @@ def main():
     while True:
         now = time.time()
         try:
-            data, _ = sock.recvfrom(256)
+            data, addr = sock.recvfrom(256)
+            if addr[0] not in sources:
+                sources.add(addr[0])
+                print(f"📥 收到 {addr[0]} 送來的 OutGauge")
             if len(data) >= SIZE:
                 f = struct.unpack(FMT, data[:SIZE])
                 speed = abs(f[5]) * 3.6                 # m/s → km/h
@@ -152,4 +169,5 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("結束")
     except OSError as e:
-        print(f"開不了 port：{e}（outgauge_test.py 還開著嗎？兩個程式不能同時聽同一個 port）")
+        print(f"開不了 port：{e}（outgauge_test.py 或另一個橋接還開著嗎？兩個程式不能同時聽同一個 port；"
+              f"--listen 的位址是這台電腦的嗎？）")
