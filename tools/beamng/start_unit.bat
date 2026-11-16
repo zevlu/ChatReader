@@ -8,9 +8,9 @@ rem  放在 C:\Users\ucl\Desktop\coDriver_testCode\ （跟 platform-tools 資料
 rem  螢幕大小不同時，改下面四個數字（左上角 X、Y，寬、高）
 rem ─────────────────────────────────────────────────────────────
 set X=0
-set Y=690
+set Y=650
 set W=1680
-set H=360
+set H=400
 
 cd /d "%~dp0platform-tools"
 adb -s R5CY21RP81B forward tcp:8765 tcp:8765

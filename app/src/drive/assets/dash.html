@@ -12,7 +12,9 @@
     ?station=3  貼心副駕（模擬器、主動關心＋AI 路由）
     不加 = 一般模式（雛形，沒有任務）
     ?unit=1     只有車機（2026-11-11）：開車畫面改用 BeamNG.drive，網頁只顯示車機；
-                車速、油量來自 BeamNG（電腦上的 beamng_bridge.py 送給手機）；聲音在電腦（按住「🎙」或空白鍵說話）
+                車速、油量、塞車來自 BeamNG（電腦上的 beamng_bridge.py 送給手機）
+                聲音預設在手機（手機唸、手機聽：說「副駕」、按手機 🎤 泡泡、網頁「🎤 手機聽我說」或空白鍵）
+                &voice=pc 改用電腦喇叭＋電腦麥克風（按住「🎙」或空白鍵說話）
                 工作人員：Shift+T 塞車 +10 分、Shift+V 到停靠點、Shift+D 抵達、Shift+L 遲到檢查、Shift+F 疲勞
     &phone=IP:8765  直接開檔案時指定手機位址
   操作：↑↓←→ 開車、按住空白鍵說話、A 自動駕駛、Enter 開始
@@ -97,7 +99,10 @@
   /* ?unit=1 只有車機：開車畫面在 BeamNG，網頁整頁都是車機 */
   #app.unitOnly { grid-template-rows:100vh; }
   #app.unitOnly #sim { display:none; }
-  #app.unitOnly #say { font-size:24px; }
+  #app.unitOnly #say { font-size:20px; line-height:1.35; max-height:2.7em; overflow:hidden; flex-shrink:0; }
+  #app.unitOnly .panel { gap:6px; padding:10px 12px; }
+  #app.unitOnly .cell { min-height:0; padding:6px 8px; }
+  #app.unitOnly .cell .v { max-height:4.3em; overflow:hidden; }
   #app.unitOnly #eta { font-size:18px; line-height:1.6; }
   #banner.float { position:fixed; top:10px; z-index:20; }
   #micBtn { background:#2f4fd1; border-color:#2f4fd1; font-weight:700; user-select:none; }
@@ -203,7 +208,7 @@ function connect() {
     if (!connected) {
       connected = true; setConn(true);
       // 展示站、只有車機：聲音交給電腦（手機不唸、不聽）
-      post({ type: 'hello', silent: !!ST || UNIT, station: ST ? Number(params.get('station')) : 0, unit: UNIT });
+      post({ type: 'hello', silent: !!ST || (UNIT && VOICE === 'pc'), station: ST ? Number(params.get('station')) : 0, unit: UNIT });
     }
     try { onState(JSON.parse(e.data)); } catch (err) { console.warn(err); }
   });
@@ -297,8 +302,9 @@ const STATIONS = {
 };
 // ?unit=1：只有車機（開車畫面用 BeamNG），不跑三站任務
 const UNIT = params.get('unit') === '1';
+const VOICE = UNIT ? (params.get('voice') === 'pc' ? 'pc' : 'phone') : 'pc';   // ?unit=1 預設用手機的麥克風和喇叭
 const ST = UNIT ? null : (STATIONS[Number(params.get('station'))] || null);
-if (ST || UNIT) document.getElementById('webVoice').checked = true;
+if (ST || (UNIT && VOICE === 'pc')) document.getElementById('webVoice').checked = true;
 
 // ───────────────────────── 任務流程 ─────────────────────────
 const mission = { phase: ST ? 'attract' : 'free', step: 0, flags: {}, startAc: 24, startFan: 2, lastInput: performance.now(), navStartAt: 0, pathLen0: 0, endAt: 0 };
@@ -465,7 +471,13 @@ function onState(s) {
   renderPipe(s);
   renderAsk(s.ask || '');
   const c = s.car || {};
-  if (UNIT && c.fuel != null) renderCar(c.speed ?? 0, c.fuel);   // 只有車機：車速、油量來自 BeamNG（經過手機）
+  if (UNIT && c.fuel != null) renderCar(c.speed ?? 0, c.fuel);
+  if (UNIT) {   // BeamNG 塞車（手機算的累積延誤）
+    const jam = s.jam || 0;
+    if (jam > unav.jam) showBanner(`🚦 前方塞車，預計多 ${jam - unav.jam} 分鐘`, 5000);
+    if (jam !== unav.jam) unav.lastReport = 0;   // 馬上回報新的到達時間
+    unav.jam = jam;
+  }   // 只有車機：車速、油量來自 BeamNG（經過手機）
   $('ac').textContent = c.ac ?? '-'; $('fan').textContent = c.fan ?? '-';
   $('win').textContent = c.window ? '開' : '關'; $('lights').textContent = c.lights ? '開' : '關';
   if (s.appt) $('appt').innerHTML = `📍 跟 <b>${esc(s.appt.friend || '')}</b> 約 ${esc(s.appt.time || '')}，在 <b>${esc(s.appt.place || '')}</b>`;
@@ -657,7 +669,7 @@ addEventListener('keydown', e => {
     if (k === 'r') toAttract();
     return;
   }
-  if (k === ' ') { if (!e.repeat) pttStart(); return; }
+  if (k === ' ') { if (!e.repeat) { if (UNIT && VOICE === 'phone') action('listen'); else pttStart(); } return; }
   if (UNIT) return;   // 只有車機：不在網頁開車
   if (k === 'a') { setAutopilot(!autopilot); return; }
   if (k === 'enter') { onEnter(); return; }
@@ -666,7 +678,7 @@ addEventListener('keydown', e => {
     if (autopilot && mission.phase !== 'attract' && k !== 'arrowup') { setAutopilot(false); note('你接手了，自動駕駛關閉'); }
   }
 });
-addEventListener('keyup', e => { const k = e.key.toLowerCase(); if (k === ' ') { pttStop(); return; } keys[k] = false; });
+addEventListener('keyup', e => { const k = e.key.toLowerCase(); if (k === ' ') { if (!(UNIT && VOICE === 'phone')) pttStop(); return; } keys[k] = false; });
 // 按完按鈕就放掉焦點，免得空白鍵（說話）又按到按鈕
 document.addEventListener('click', e => { touch(); if (e.target.tagName === 'BUTTON') e.target.blur(); });
 
@@ -843,9 +855,9 @@ function localPlan(dest) {   // 離線測試用
 // 真的路線由人在 BeamNG 按 M 設定 GPS。到停靠點／抵達用 Shift+V／Shift+D。（之後再改成讀 BeamNG 的 GPS）
 const UNIT_MIN = 15;     // 預估車程（分鐘）
 const UNIT_KMH = 30;     // 換算公里數用的平均時速
-const unav = { id: -1, dest: '', via: '', viaDone: true, active: false, arrived: false, arriveAt: 0, delay: 0, lastReport: 0 };
+const unav = { id: -1, dest: '', via: '', viaDone: true, active: false, arrived: false, arriveAt: 0, delay: 0, jam: 0, lastReport: 0 };
 function unitEta() {
-  const minutes = Math.max(1, Math.round((unav.arriveAt - Date.now()) / 60000) + unav.delay);
+  const minutes = Math.max(1, Math.round((unav.arriveAt - Date.now()) / 60000) + unav.delay + unav.jam);
   const t = new Date(Date.now() + minutes * 60000);
   return { km: Math.round(minutes / 60 * UNIT_KMH * 10) / 10, minutes, arrival: String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') };
 }
@@ -875,7 +887,8 @@ function unitNavTick(now) {
   const etaEl = document.getElementById('eta'), navState = document.getElementById('navState');
   if (!unav.dest) {
     navState.textContent = '沒有導航';
-    etaEl.innerHTML = '說「帶我去跟孟澤約的地方」<br><span class="hint">按住「🎙 按住說話」或空白鍵（要先點一下這個網頁）</span>' +
+    etaEl.innerHTML = '說「帶我去跟孟澤約的地方」<br><span class="hint">' +
+      (VOICE === 'phone' ? '對手機說「副駕」叫它，或按「🎤 手機聽我說」／空白鍵（要先點一下這個網頁）' : '按住「🎙 按住說話」或空白鍵（要先點一下這個網頁）') + '</span>' +
       '<br><span class="hint">工作人員：Shift+T 塞車＋10 分・Shift+V 到停靠點・Shift+D 抵達・Shift+L 遲到檢查</span>';
     return;
   }
@@ -884,7 +897,7 @@ function unitNavTick(now) {
   const viaTxt = unav.via && !unav.viaDone ? `（先到${esc(unav.via)}）` : '';
   navState.textContent = unav.active ? '導航中' : '等你確認';
   etaEl.innerHTML = `${unav.active ? '▶' : '⏸ 預覽'} <b>${esc(unav.dest)}</b>${viaTxt}<br>約 ${e.minutes} 分鐘・預計 <b>${e.arrival}</b> 到` +
-    (unav.delay ? `<br><span style="color:var(--warn)">⚠ 塞車，多了 ${unav.delay} 分鐘</span>` : '') +
+    (unav.delay + unav.jam ? `<br><span style="color:var(--warn)">🚦 塞車，多了 ${unav.delay + unav.jam} 分鐘</span>` : '') +
     `<br><span class="hint">🎮 請在 BeamNG 按 M，把 GPS 設到「${esc(unav.via && !unav.viaDone ? unav.via : unav.dest)}」</span>`;
   if (unav.active && now - unav.lastReport > 2000) {
     unav.lastReport = now;
@@ -1054,14 +1067,19 @@ if (ST) {
   document.getElementById('app').classList.add('unitOnly');
   const bn = document.getElementById('banner'); bn.classList.add('float'); document.body.appendChild(bn);
   document.title = 'CoDriver 車機（BeamNG）';
-  const mb = document.createElement('button');
-  mb.id = 'micBtn'; mb.textContent = '🎙 按住說話';
-  mb.addEventListener('mousedown', e => { e.preventDefault(); touch(); pttStart(); });
-  ['mouseup', 'mouseleave'].forEach(ev => mb.addEventListener(ev, () => pttStop()));
-  const fb = document.getElementById('freeBtns'); fb.insertBefore(mb, fb.firstChild);
-  // 手機不聽（聲音在電腦）、BeamNG 自己有導航語音：這兩個用不到
-  fb.querySelector(`button[onclick="action('listen')"]`).style.display = 'none';
-  document.getElementById('navVoice').parentElement.style.display = 'none';
+  const fb = document.getElementById('freeBtns');
+  if (VOICE === 'pc') {   // 電腦麥克風：加「按住說話」；手機不聽，「手機聽我說」用不到
+    const mb = document.createElement('button');
+    mb.id = 'micBtn'; mb.textContent = '🎙 按住說話';
+    mb.addEventListener('mousedown', e => { e.preventDefault(); touch(); pttStart(); });
+    ['mouseup', 'mouseleave'].forEach(ev => mb.addEventListener(ev, () => pttStop()));
+    fb.insertBefore(mb, fb.firstChild);
+    fb.querySelector(`button[onclick="action('listen')"]`).style.display = 'none';
+  } else {                // 手機麥克風（預設）：「手機聽我說」放第一個
+    const lb = fb.querySelector(`button[onclick="action('listen')"]`);
+    lb.classList.add('primary'); fb.insertBefore(lb, fb.firstChild);
+  }
+  document.getElementById('navVoice').parentElement.style.display = 'none';   // BeamNG 自己有導航語音
   document.querySelector('#unit .panel:last-child .title span').textContent = '✉️ 訊息與車況（🎮 BeamNG）';
   renderCar(0, 0);
 } else {

@@ -74,6 +74,7 @@ object CarMate {
     private const val GAS_QUERY = "加油站"        // 順路停靠點交給 Google 地圖找
     private const val NAV_CHECK_MS = 60_000L     // 導航中多久檢查一次抵達時間
     private const val FATIGUE_MIN = 90           // 連續開多久（分鐘）主動問要不要休息
+    private const val JAM_MIN = 10               // BeamNG 塞車一次，預估多花幾分鐘
     // 車上設備（模擬值，畫面上的卡片會顯示；之後換成車廠的車控介面）
     var acTemp = 24                 // 冷氣溫度 °C
         private set
@@ -133,6 +134,10 @@ object CarMate {
 
     // 三站展示（網頁 ?station=1|2|3 打招呼時告訴我們）
     private var station = 0
+    /** 網頁 ?unit=1：開車畫面在 BeamNG，網頁只有車機（2026-11-11） */
+    private var unitMode = false
+    /** BeamNG 塞車累積多花的分鐘（推給網頁，網頁把它加進預計到達時間） */
+    private var jamExtra = 0
     private var demoSending = false              // 模擬聊天模式：訊息填好、等使用者確認
     /** 模擬聊天模式：2、3 號站，或手機（模擬器）上沒有 Messenger 時，改讀 assets/demo_chats.json */
     private val demoChats: Boolean get() = station == 2 || station == 3 || !isInstalled(MESSENGER)
@@ -441,6 +446,7 @@ object CarMate {
         pendingAnswer = null
         fuelChecked = false
         lastWarnedLate = 0
+        jamExtra = 0
         nearAsked = false
         fatigueAsked = false
         chatting = false
@@ -821,6 +827,41 @@ object CarMate {
         }
     }
 
+    /**
+     * BeamNG 塞車（2026-11-11）：電腦上的 beamng_bridge.py 發現車速低於 10 km/h 持續 20 秒，就送 action=jam。
+     * 只在導航中理會（停車不算塞車）。預計多花 JAM_MIN 分鐘；會遲到就主動問要不要通知約好的人。
+     */
+    private fun onJam() {
+        if (!navigating) { log("🚗 車停了一陣子，但沒有在導航，不打擾"); return }
+        jamExtra += JAM_MIN
+        log("🚦 BeamNG 偵測到塞車，預計多 $JAM_MIN 分鐘")
+        update()
+        // 正在問別的事或正在傳訊息：先不插話（之後導航檢查會用新的到達時間再提醒）
+        if (pendingAnswer != null || demoSending || MessengerAgent.busy || chatting) return
+        val a = appointment
+        val friend = a?.friend.orEmpty()
+        val arrival = webNav?.optString("arrival").orEmpty()           // 網頁上次回報的到達時間（還沒算這次塞車）
+        val newArrival = if (arrival.isNotEmpty()) addMinutes(arrival, JAM_MIN) else ""
+        val late = if (a != null && a.timeHHmm.isNotEmpty() && newArrival.isNotEmpty()) lateMinutes(newArrival, a.timeHHmm) else null
+        if (friend.isEmpty() || late == null) {
+            say("前面塞車了，大概會多花 $JAM_MIN 分鐘，慢慢開。")
+            return
+        }
+        lastWarnedLate = maxOf(lastWarnedLate, late)                  // 導航檢查就不會再問一次
+        log("⏰ 塞車後預計 $newArrival 到，會晚 $late 分鐘，主動提醒")
+        val where = a?.place?.let { "到$it" } ?: ""
+        askYesNo("前面塞車了，照這個車流你大概會晚 $late 分鐘$where。要我幫你跟${friend}說一聲嗎？") { yes ->
+            if (yes) notifyLate(friend, late, "") else say("好，那我先不通知。")
+        }
+    }
+
+    /** "HH:mm" 加幾分鐘（跨午夜會繞回來） */
+    private fun addMinutes(hhmm: String, minutes: Int): String {
+        val m = Regex("""^(\d{1,2}):(\d{2})$""").find(hhmm.trim()) ?: return hhmm
+        val t = ((m.groupValues[1].toInt() * 60 + m.groupValues[2].toInt() + minutes) % 1440 + 1440) % 1440
+        return "%02d:%02d".format(t / 60, t % 60)
+    }
+
     private fun notifyLate(friend: String, minutes: Int?, message: String) {
         val f = friend.ifEmpty { appointment?.friend ?: firstContact() }
         sendMessage(f, message.ifEmpty { DriveBrain.lateTemplate(minutes) })
@@ -1130,6 +1171,7 @@ object CarMate {
             "hello" -> {
                 if (j.has("silent")) Voice.silent = j.optBoolean("silent")
                 station = j.optInt("station", 0)
+                unitMode = j.optBoolean("unit")
                 log("🖥 網頁車機連上" + (if (station > 0) "（$station 號站）" else "") + if (demoChats) "，使用模擬聊天" else "")
                 onDashConnected()
             }
@@ -1145,6 +1187,8 @@ object CarMate {
                 "fatigue" -> simulateFatigue()
                 "late" -> lateCheck()
                 "reset" -> resetForDemo()
+                "jam" -> onJam()                                   // BeamNG 橋接程式：塞車了
+                "jamClear" -> if (navigating) log("🚗 BeamNG 車流恢復")
             }
             "vehicle" -> {
                 val s = j.optInt("speed", speedKmh)
@@ -1178,6 +1222,7 @@ object CarMate {
         webRouteAppt = null
         fuelChecked = false
         lastWarnedLate = 0
+        jamExtra = 0
         nearAsked = false
         fatigueAsked = false
         sendFriend = ""
@@ -1203,6 +1248,7 @@ object CarMate {
     private fun requestWebRoute(a: Appointment, viaGas: Boolean, startNow: Boolean = false, via: String = "") {
         navSeq++
         webRouteAppt = a
+        jamExtra = 0
         webNav = null
         navReq = JSONObject()
             .put("id", navSeq).put("cmd", "plan").put("dest", a.place)
@@ -1222,7 +1268,7 @@ object CarMate {
                 val km = j.optDouble("km", 0.0)
                 val arrival = j.optString("arrival")
                 // 1 號站、4 號站：約定時間第一次規劃時改成「剛好來得及」（改過的時間後面有「（展示）」，不會再改）
-                if ((station == 1 || station == 4) && webRouteAppt?.time?.endsWith("（展示）") != true) demoApptTime(arrival)
+                if ((station == 1 || station == 4 || unitMode) && webRouteAppt?.time?.endsWith("（展示）") != true) demoApptTime(arrival)
                 val a = webRouteAppt
                 val late = if (a != null && a.timeHHmm.isNotEmpty()) lateMinutes(arrival, a.timeHHmm) else null
                 val r = RouteInfo("$mins 分鐘 (${"%.1f".format(km)} 公里)", mins, false, arrival, late)
@@ -1373,6 +1419,7 @@ object CarMate {
         }
         put("agent", if (demoSending) "已填好（模擬），等你說「送出」" else MessengerAgent.history.lastOrNull() ?: "")
         put("station", station)
+        put("jam", jamExtra)
         if (demoChats) put("demoChats", DemoChats.toJson(app))
         navReq?.let { put("nav", it) }
         put("navigating", navigating)

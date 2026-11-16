@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-BeamNG → CoDriver 橋接程式（2026-11-11，里程碑 2）
+BeamNG → CoDriver 橋接程式（2026-11-11，里程碑 2＋3）
 
 做的事：
   收 BeamNG.drive 的 OutGauge UDP（車速、油量）→ 每秒送一次給手機上的 CoDriver：
       POST http://127.0.0.1:8765/api   {"type":"vehicle","speed":45,"fuel":72,"game":true}
   手機再把車速、油量推給網頁車機（http://localhost:8765/?unit=1）顯示。
-  塞車判斷（低於 10 km/h 持續 20 秒）目前只印在畫面上；里程碑 3 才會通知副駕。
+  塞車：低於 10 km/h 持續 20 秒 → POST {"type":"action","name":"jam"}，
+        手機 CoDriver（導航中才理會）多算 10 分鐘，會遲到就主動問要不要通知約好的人。
+        車速回到 10 km/h 以上 → {"type":"action","name":"jamClear"}（只記在紀錄裡）
 
 事前準備：
   1. 手機用 USB 接電腦，CoDriver 開著，cmd 先執行：
@@ -110,16 +112,24 @@ def main():
 
         kmh, pct = int(round(speed)), int(round(fuel.value))
 
-        # 塞車判斷（里程碑 3 會改成通知副駕）
+        # 塞車判斷 → 通知手機（手機只在導航中理會）
+        event = None
         if kmh < a.jam_kmh:
             slow_since = slow_since or now
             if not jam and now - slow_since >= a.jam_sec:
                 jam = True
-                print(f"【塞車】已經 {now - slow_since:.0f} 秒低於 {a.jam_kmh:.0f} km/h（里程碑 3 會讓副駕問要不要傳訊息）")
+                event = "jam"
+                print(f"【塞車】已經 {now - slow_since:.0f} 秒低於 {a.jam_kmh:.0f} km/h → 通知副駕")
         else:
             if jam:
+                event = "jamClear"
                 print("【車流恢復】")
             slow_since, jam = None, False
+        if event:
+            try:
+                post(a.phone, {"type": "action", "name": event})
+            except Exception as e:
+                print(f"❌ 塞車通知沒送到手機（{e}）")
 
         try:
             ok = post(a.phone, {"type": "vehicle", "speed": kmh, "fuel": pct, "game": True})
