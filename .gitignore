@@ -13,3 +13,11 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# 本機除錯輸出（不要進 git）
+/latest.png
+/latest_tree.txt
+/latest_messages.txt
+
+# DGX 量測輸出（tools/dgx/power_mem_monitor.py）
+/logs/
