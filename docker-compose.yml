@@ -1,0 +1,80 @@
+# CoDriver：B 台（車機台）的容器（2026-11-16）
+#
+#   codriver-llm     本機 LLM（vLLM，OpenAI 相容 API），取代學校 iAI Hub
+#   codriver-bridge  BeamNG OutGauge → 手機 CoDriver 的橋接程式（network_mode: host）
+#   codriver-monitor （預留）C 台 AI 看板：記錄每次 LLM 的輸入、輸出、延遲 —— 還沒實作
+#
+# 用法（在 repo 根目錄）：
+#   cp .env.example .env        第一次：複製設定檔，再依需要修改（.env 不會進 git）
+#   docker compose up -d        啟動
+#   docker compose logs -f codriver-llm
+#   docker compose down         停止
+#
+# 注意：這台 DGX 也有 ai-truth-lab 的容器（含它自己的 Ollama）。
+#       本專案的容器一律叫 codriver-*，port 預設 8300，不會跟它衝突；不要動它的容器。
+# 遊戲（BeamNG＋Steam＋FEX）和 BeamNG.Earth 世界伺服器在 A 台主機層執行，不在這裡（見 tools/dgx/README.md）。
+
+name: codriver
+
+services:
+  codriver-llm:
+    image: ${CODRIVER_LLM_IMAGE:-nvcr.io/nvidia/vllm:26.10-py3}
+    container_name: codriver-llm
+    restart: unless-stopped
+    # App（LlmClient.kt）寫死 model = "qwen3.8-flash-next"，並用 chat_template_kwargs.enable_thinking=false 關閉思考，
+    # 所以用 --served-model-name 讓本機模型也叫這個名字，App 不用改。
+    command: >
+      vllm serve /models/${CODRIVER_LLM_MODEL:-Qwen3-8B}
+      --served-model-name qwen3.8-flash-next
+      --host 0.0.0.0 --port 8000
+      --gpu-memory-utilization ${CODRIVER_LLM_GPU_MEM:-0.25}
+      --max-model-len ${CODRIVER_LLM_MAX_LEN:-8192}
+      ${CODRIVER_LLM_EXTRA_ARGS:-}
+    environment:
+      # 有設定才會要求 Authorization: Bearer <金鑰>（App 的 local.properties IAI_KEY 要一樣）
+      - VLLM_API_KEY=${CODRIVER_LLM_KEY:-}
+    ports:
+      - "${CODRIVER_LLM_PORT:-8300}:8000"
+    volumes:
+      - ${CODRIVER_MODELS_DIR:-~/codriver-models}:/models:ro
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8000/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 600s
+      retries: 3
+
+  codriver-bridge:
+    image: ${CODRIVER_BRIDGE_IMAGE:-python:3.12-slim}
+    container_name: codriver-bridge
+    restart: unless-stopped
+    network_mode: host          # 直接用主機的網路：收 UDP OutGauge、連 adb forward 的 127.0.0.1:8765
+    working_dir: /app
+    command: ["python", "-u", "beamng_bridge.py"]
+    environment:
+      - CODRIVER_OUTGAUGE_LISTEN=${CODRIVER_OUTGAUGE_LISTEN:-127.0.0.1}   # 雙機（A 台遊戲 → B 台）改 0.0.0.0
+      - CODRIVER_OUTGAUGE_PORT=${CODRIVER_OUTGAUGE_PORT:-4444}
+      - CODRIVER_PHONE=${CODRIVER_PHONE:-http://127.0.0.1:8765}
+      - TZ=Asia/Taipei
+    volumes:
+      - ./tools/beamng:/app:ro
+
+  # codriver-monitor:          # 預留給 C 台的 AI 看板（之後實作）
+  #   build: ./tools/monitor
+  #   container_name: codriver-monitor
+  #   restart: unless-stopped
+  #   ports:
+  #     - "${CODRIVER_MONITOR_PORT:-8310}:8310"
+  #   # 規劃：放在 App 和 codriver-llm 中間當代理（App 的 IAI_BASE 改指向它），
+  #   #       記錄每次請求的輸入、輸出、延遲，提供網頁給 C 台顯示。

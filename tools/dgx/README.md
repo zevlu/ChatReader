@@ -1,0 +1,171 @@
+# CoDriver on DGX Spark：部署說明
+
+這份說明 CoDriver 展示在 NVIDIA DGX Spark 上的部署方式。DGX Spark 是 Ubuntu 24.04 arm64，GPU 為 GB10，CPU 和 GPU 共用 128 GB 統一記憶體。
+
+## 三台 DGX 的分工
+
+| 台 | 角色 | 跑什麼 | 部署方式 |
+|---|---|---|---|
+| **A 遊戲台** | 駕駛看的畫面 | Steam（背景）、BeamNG.drive 0.40.5 原生 Linux 版（FEX 轉譯）、BeamNG.Earth 1.9.1-beta 世界伺服器 | 主機層（本資料夾的腳本），**不用 Docker** |
+| **B 車機台** | 手機 USB 接這台 | `codriver-llm`（vLLM，本機 LLM）、`codriver-bridge`（OutGauge → 手機） | repo 根目錄的 `docker-compose.yml` |
+| **C 台** | AI 看板／展示影片／備援 | 之後的 `codriver-monitor`；需要時當 A 或 B 的備援 | — |
+
+資料流：
+
+```
+A：BeamNG ──OutGauge UDP（車速、油量）──▶ B：codriver-bridge ──POST /api──▶ 手機 CoDriver（adb forward 8765）
+                                                                         │
+                                         B：codriver-llm（:8300）◀──────┘ adb reverse 8300（App 的 IAI_BASE）
+```
+
+單機模式（A＋B 在同一台，開發／測試用）：全部用 127.0.0.1。
+
+**改成雙機只要改兩個設定：**
+1. A 台 `tools/dgx/codriver-dgx.conf`：`OUTGAUGE_HOST=<B 台 IP>`，再執行 `tools/dgx/bng outgauge`。
+2. B 台 `.env`：`CODRIVER_OUTGAUGE_LISTEN=0.0.0.0`，再執行 `docker compose up -d`。
+
+B 台的防火牆（ufw）要開放 A 台送來的 UDP 4444，指令是 `sudo ufw allow from <A 台 IP> to any port 4444 proto udp`。
+
+> Steam 同一個帳號同時只能在一台電腦跑遊戲。C 台當 A 台備援時，要先把 A 台的遊戲關掉。
+
+---
+
+## A 台：安裝（第一次）
+
+### 1. 手動步驟（需要 sudo 或要人操作）
+
+1. **遠端畫面**：用 [seanGSISG/dgx-spark-sunshine-setup](https://github.com/seanGSISG/dgx-spark-sunshine-setup) 安裝 Sunshine，非互動模式加 `-y`。
+   - 這個腳本會改 `/etc/X11/xorg.conf` 和 GDM 設定，**動手前先備份**。
+   - 不要同時裝 eelbaz 的腳本。
+   - 1080p 是用 `~/.config/monitors.xml` 強制的。
+2. **Steam**：`sudo snap install steam`。這是 Canonical 的 arm64 Steam snap，內建 FEX。
+   - 第一次在桌面啟動 Steam，問設定時選 **Use default config**，然後登入。
+   - 學校網路對 Steam 每條連線限速約 30 KB/s，Steam 本體更新很慢，可以預先下載更新檔。
+3. **BeamNG 遊戲檔**：從已經裝好的 Windows 電腦複製，比 Steam 下載快很多。
+   - 把 `steamapps\common\BeamNG.drive`（約 53 GB）和 `steamapps\appmanifest_284160.acf` 放到 `~/snap/steam/common/.local/share/Steam/steamapps/`。
+   - Windows cmd 用 `sftp`，在 sftp 裡下 `put -a -r` 可以續傳；遠端要先建立 0 byte 的同名檔案。
+4. **Steam 不自動更新 BeamNG**：在媒體庫對 BeamNG 按右鍵 → 內容 → 更新 → 「Wait until I launch the game」。
+   - 目前版本是 0.40.5，Earth 1.9.1 需要 0.40.x。
+   - 我們不從 Steam 按 Play，所以不會觸發更新。
+
+### 2. 自動步驟
+
+```bash
+cd ~/ChatReader
+tools/dgx/install_host.sh
+```
+
+這個腳本不用 sudo，可以重複執行，會做這些事：
+- BeamNG 的 Linux 執行檔加上執行權限
+- FEX 的 BeamNG 專用設定（TSO 關閉）
+- 「使用我的設定」標記，Steam 啟動時就不會跳出詢問視窗
+- BeamNG.Earth：原始碼、ARM 原生 venv、網路修正，以及用使用者層級的 Rust 編譯 `earthfast`
+- 安裝 CoDriver 的 BeamNG mod
+
+執行期的大檔案放在 `~/codriver-dgx/`，這個資料夾不進 git。
+
+---
+
+## A 台：操作
+
+```bash
+tools/dgx/start_codriver.sh                  # 一鍵啟動，約 40 秒到高雄（設定在 codriver-dgx.conf）
+tools/dgx/start_codriver.sh 高科大建工 8      # 指定起點和交通車台數
+tools/dgx/stop_codriver.sh                   # 關遊戲和世界伺服器（不要用 Steam 的 STOP）
+tools/dgx/bng                                # 列出所有操作指令
+```
+
+`bng` 的常用指令：
+
+| 指令 | 作用 |
+|---|---|
+| `bng place <地點>`、`bng tp <緯度> <經度>` | 傳送 |
+| `bng car <車型>` | 換車 |
+| `bng traffic <台數｜off>` | 叫出或移除交通車 |
+| `bng jam on｜off` | 開關塞車模式 |
+| `bng outgauge` | 套用 OutGauge 設定 |
+| `bng panel` | 叫出 Earth 資訊面板 |
+| `bng road` | 卡住時回到最近的道路 |
+| `bng status` | 查看目前狀態 |
+
+遊戲裡的按鍵：**J** 暫停、**R** 重置、**C** 換鏡頭、**Shift+C** 自由鏡頭。
+
+### 為什麼沒有遊戲選單
+
+BeamNG 內建的 CEF（Chromium 150）在 FEX 轉譯下 renderer 會 segfault。這是新版 CEF 的 FD 處理跟 FEX 不合，加 `-nosandbox` 或 FEX `Multiblock=0` 都沒用。
+
+所以 BeamNG 用 `-noui` 執行，連帶有這些狀況：
+- 3D 畫面元件改由 `start_codriver.sh` 用 Lua 建立
+- 選單、HUD、小地圖、radial 選單、Earth 的大地圖（M）都不能用
+- 操作全部改用 `bng`，或 Earth 的 imgui 資訊面板
+
+`bng` 是怎麼控制遊戲的：`tools/dgx/beamng_mod/codriver` 這個 mod 每 0.5 秒讀一次使用者資料夾的 `codriver_cmd.lua`，執行完把結果寫進 `codriver_result.txt`。
+- 不用 `-luastdin`：它會讓主執行緒每一幀都停下來等輸入。
+- 使用者資料夾根目錄的鬆散檔案，會在啟動時被 BeamNG 的 folderCleanup 搬走，所以 mod 一定要放在 `mods/`。
+
+---
+
+## B 台：docker-compose
+
+```bash
+cd ~/ChatReader
+cp .env.example .env            # 第一次；依需要改 .env（金鑰只放 .env，不會進 git）
+docker compose up -d
+docker compose logs -f codriver-llm      # 第一次載入模型要幾分鐘
+python3 tools/dgx/llm_bench.py --count 5 # 測試回答與延遲
+```
+
+- `codriver-llm` 使用 `nvcr.io/nvidia/vllm:26.10-py3`（arm64）和 `~/codriver-models/<模型>`。
+- App 的 `LlmClient.kt` 寫死 `model = "qwen3.8-flash-next"`，並用 `chat_template_kwargs.enable_thinking=false` 關閉思考。vLLM 用 `--served-model-name` 沿用這個名字，**App 不用改**。
+- 原本的 iAI Hub 模型 `Qwen/Qwen3.8-Flash-Next` 有 1800 億參數、360 GB，DGX 放不下，所以改用本機模型。
+- 下載模型：`tools/dgx/fetch_hf_model.sh Qwen/Qwen3-8B ~/codriver-models/Qwen3-8B`。
+  - 這支腳本用 curl 逐檔續傳，斷線或 DNS 失敗會自動重試，不會從頭來。
+  - 學校網路下，Hugging Face 官方的 `hf download` 會卡在 xet，而且斷線就從頭下載。
+- vLLM 映像檔約 11 GB（解壓後 39 GB）。學校網路 DNS 偶爾失敗，`docker pull` 要包在重試迴圈裡跑。
+
+手機 USB 接 B 台，要先 `sudo apt install adb`（Google platform-tools 沒有 Linux arm64 版）：
+
+```bash
+adb forward tcp:8765 tcp:8765   # 橋接 → 手機 DashServer
+adb reverse tcp:8300 tcp:8300   # 手機 → codriver-llm
+```
+
+App 的 `local.properties`：`IAI_BASE=http://127.0.0.1:8300/v1`。`IAI_KEY` 要跟 `.env` 的 `CODRIVER_LLM_KEY` 一樣；`.env` 沒設金鑰時填任意字串。iAI Hub 可以保留當備援，改回原本的 `IAI_BASE` 就能切回去。
+
+這台 DGX 同時有 ai-truth-lab 的容器，包括它自己的 Ollama。所以：
+- 本專案的容器一律叫 `codriver-*`，port 用 8300
+- **不要停或刪除它們的容器**
+- 重開機前要先通知對方
+
+---
+
+## 量測（功耗、記憶體、LLM 延遲）
+
+```bash
+python3 tools/dgx/power_mem_monitor.py --label game10 --duration 600 \
+  --group 'beamng=BinLinux/BeamNG\.drive\.x64' \
+  --group 'codriver_llm=qwen3\.8-flash-next|VLLM::'
+python3 tools/dgx/llm_bench.py --duration 300 --quiet   # llm 情境時同時跑
+```
+
+- 一定要加 `beamng=...` 這組：Earth 伺服器的指令列也含「BeamNG」（`BeamNG.Earth/launcher.py`），不加會被算進 beamng。
+- `codriver_llm=...` 這組只抓我們的 vLLM，ai-truth-lab 的 Ollama 留在原本的 `llm` 組。
+- 這台沒有 hwmon 功耗感測器，`gpu_power_w` 只是 GPU 的功耗，整台要用插座電表量。
+- 記憶體以 `/proc/meminfo` 為準：統一記憶體下 nvidia-smi 的 Memory-Usage 會顯示 Not Supported。
+
+---
+
+## 實測數據（2026-11-16，A＋B 單機）
+
+| 情境 | 遊戲 FPS | GPU 平均／最大 | GPU 最高溫 | 已用記憶體（減 idle 5.4 GB） |
+|---|---|---|---|---|
+| idle | — | 10.5／11.1 W | 40°C | 基準 |
+| 高雄，無交通車 | 60（垂直同步） | 34.5／39.0 W | 58°C | +19.3 GB |
+| 高雄，10 台交通車＋塞車 | 60（最低 54） | 46.9／57.2 W | 76°C | +21.3 GB |
+| llm（Qwen3-8B 連續請求，沒有遊戲） | — | 33.6／39.7 W | 59°C | +33.6 GB（vLLM 佔 28.2 GB） |
+
+codriver-llm（Qwen3-8B，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸入約 1070 tokens，輸出約 33 tokens）：
+- **只跑 LLM（B 台的情況）**：122 次請求，意圖 100% 正確，延遲平均 2.47 秒、P95 3.1 秒
+- 跟遊戲同一台（單機）：延遲平均 4.3 秒，所以展示時遊戲和 LLM 要分開在 A、B 兩台
+
+交通車數量對 FPS 的影響（west_coast_usa 地圖）：10 台約 90 FPS、12 台約 80 FPS、**15 台只剩 12～20 FPS**。所以交通車最多用到 10～12 台。

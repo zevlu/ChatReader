@@ -1,0 +1,87 @@
+#!/bin/bash
+# bng：從終端機操作 DGX 上的 BeamNG（遊戲內選單 CEF 在 FEX 下會當掉，所以用 -noui 執行，改用這個工具）
+# 原理：把 Lua 寫進 BeamNG 使用者資料夾的 codriver_cmd.lua，codriver mod（tools/dgx/beamng_mod）每 0.5 秒執行一次，
+#       結果寫進 codriver_result.txt。
+HERE=$(dirname "$(readlink -f "$0")")
+source "$HERE/codriver-dgx.conf"
+U=$BEAMNG_USER
+LOG=$U/beamng.log
+
+usage() {
+cat <<'EOF'
+用法：bng <指令>
+  bng place                 列出預設地點
+  bng place <名稱>          傳送到預設地點（例：bng place 高雄車站）
+  bng tp <緯度> <經度>      傳送到任意經緯度（Google 地圖右鍵可複製經緯度）
+  bng car <車型> [配置]     換車（例：bng car etk800、bng car vivace）；bng car 列出常用車型
+  bng traffic <台數|off>    叫出交通車（建議 ≤ 10）或全部移除
+  bng jam on|off            塞車模式（交通車限速 3 m/s ≈ 11 km/h）／恢復
+  bng outgauge              套用 codriver-dgx.conf 的 OutGauge 設定（OUTGAUGE_HOST／PORT）
+  bng outgauge <IP> [port]  暫時改送到別的位址（不改設定檔）
+  bng panel [off]           叫出／隱藏 BeamNG.Earth 資訊面板（可輸入經緯度按 Teleport）
+  bng pause | resume        暫停／繼續（遊戲裡是 J 鍵）
+  bng reset                 把車重置在原地（遊戲裡是 R 鍵）
+  bng road                  把車放回最近走過的道路（卡在奇怪地方時用）
+  bng status                目前位置、FPS、車輛狀態、OutGauge 目標
+  bng lua '<Lua 程式>'      直接執行 GE Lua（進階）
+EOF
+}
+
+# 送出 Lua，等 codriver mod 把結果寫進 codriver_result.txt（最多 15 秒）
+send() {
+  [ -n "$(pgrep -f '[B]inLinux/BeamNG.drive.x64')" ] || { echo "遊戲沒有在執行（先執行 tools/dgx/start_codriver.sh）"; exit 1; }
+  local res=$U/codriver_result.txt
+  rm -f "$res"
+  printf '%s\n' "$1" > $U/codriver_cmd.tmp && mv $U/codriver_cmd.tmp $U/codriver_cmd.lua
+  for i in $(seq 1 30); do
+    if [ -s "$res" ]; then sed 's/^ok: //; s/^error: /錯誤：/' "$res"; echo; return 0; fi
+    sleep 0.5
+  done
+  echo "（已送出，15 秒內沒有結果；遊戲可能正在載入或暫停中）"
+  return 1
+}
+
+# 預設地點（緯度 經度）—— 概略座標，展示起點請換成實際量好的
+declare -A PLACES=(
+  [高雄車站]="22.6394 120.3025"
+  [高科大建工]="22.6505 120.3285"
+  [85大樓]="22.6116 120.3006"
+  [夢時代]="22.5951 120.3070"
+  [巨蛋]="22.6694 120.3022"
+)
+
+case "$1" in
+  place)
+    if [ -z "$2" ]; then for k in "${!PLACES[@]}"; do echo "  $k  ${PLACES[$k]}"; done; exit 0; fi
+    p=${PLACES[$2]}; [ -n "$p" ] || { echo "沒有這個地點：$2（bng place 看清單）"; exit 1; }
+    set -- tp $p "$2" ;&
+  tp)
+    [ -n "$3" ] || { usage; exit 1; }
+    send "local ok, why = beamngEarth_api.teleport($2, $3, '${4:-CoDriver}') return 'teleport ' .. tostring(ok) .. ' ' .. tostring(why or '')" ;;
+  car)
+    if [ -z "$2" ]; then echo "常用車型：pickup（目前）etk800 etkc vivace covet bluebuck legran midsize fullsize van sunburst2 bastion"; exit 0; fi
+    cfg=${3:+, config = 'vehicles/$2/$3.pc'}
+    send "core_vehicles.replaceVehicle('$2', { $cfg }) return 'car $2'" ;;
+  traffic)
+    if [ "$2" = off ]; then send "gameplay_traffic.deleteVehicles() return 'traffic off'"
+    else n=${2:-8}; send "settings.setValue('trafficSimpleVehicles', true) settings.setValue('trafficAmount', $n) gameplay_traffic.setupTraffic($n) return 'traffic $n (生成中，前 30 秒會比較卡)'"; fi ;;
+  jam)
+    if [ "$2" = on ]; then send "gameplay_traffic.setTrafficVars({speedLimit = 3}) return 'jam on'"
+    else send "gameplay_traffic.setTrafficVars({speedLimit = -1}) return 'jam off'"; fi ;;
+  outgauge)
+    host=${2:-$OUTGAUGE_HOST}; port=${3:-$OUTGAUGE_PORT}
+    # 設定值存進 BeamNG 的設定；protocols.init() 讓玩家的車馬上改用新位址（只有玩家坐的車會送）
+    send "settings.setValue('protocols_outgauge_enabled', true) settings.setValue('protocols_outgauge_address', '$host') settings.setValue('protocols_outgauge_port', $port) local v = be:getPlayerVehicle(0) if v then v:queueLuaCommand('protocols.init()') end return 'OutGauge → ' .. settings.getValue('protocols_outgauge_address') .. ':' .. tostring(settings.getValue('protocols_outgauge_port'))" ;;
+  panel)
+    if [ "$2" = off ]; then send "local ui = require('beamngEarth/ui') ui.visible = false return 'panel hidden'"
+    else send "local ui = require('beamngEarth/ui') ui.visible = true ui.hudHidden = false return 'panel shown'"; fi ;;
+  pause)  send "simTimeAuthority.pause(true) return 'paused'" ;;
+  resume) send "simTimeAuthority.pause(false) simTimeAuthority.set(1) return 'running'" ;;
+  reset)  send "resetGameplay(0) return 'reset'" ;;
+  road)   send "spawn.teleportToLastRoad() return 'moved to last road'" ;;
+  status)
+    send "local p = beamngEarth_api and beamngEarth_api.pose() local v = be:getPlayerVehicle(0) return string.format('位置 %s, %s | 車 %s | 暫停 %s | 交通車 %s | OutGauge %s %s:%s', p and string.format('%.5f', p.lat) or '?', p and string.format('%.5f', p.lon) or '?', v and v:getJBeamFilename() or '無', tostring(simTimeAuthority.getPause()), tostring(gameplay_traffic.getNumOfTraffic()), settings.getValue('protocols_outgauge_enabled') and '開' or '關', tostring(settings.getValue('protocols_outgauge_address')), tostring(settings.getValue('protocols_outgauge_port')))"
+    grep -a CODRIVER_FPS $LOG | tail -1 | sed -E 's/.*CODRIVER_FPS /FPS: /; s/ earthReady.*//' ;;
+  lua) send "$2" ;;
+  *) usage ;;
+esac
