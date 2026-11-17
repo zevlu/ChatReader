@@ -27,6 +27,7 @@ cat <<'EOF'
   bng panel [off]           叫出／隱藏 BeamNG.Earth 資訊面板（可輸入經緯度按 Teleport）
   bng window [寬 高]        改成視窗模式（預設 1280 720）
   bng fullscreen            改回 1920x1080 無邊框全螢幕
+  bng day [小時]            固定成白天（預設 13 點、時間不走；Earth 預設跟真實時間，晚上會全黑）
   bng pause | resume        暫停／繼續（遊戲裡是 J 鍵）
   bng reset                 把車重置在原地（遊戲裡是 R 鍵）
   bng road                  把車放回最近走過的道路（卡在奇怪地方時用）
@@ -103,11 +104,27 @@ case "$1" in
     if [ "$2" = off ]; then send "local ui = require('beamngEarth/ui') ui.visible = false return 'panel hidden'"
     else send "local ui = require('beamngEarth/ui') ui.visible = true ui.hudHidden = false return 'panel shown'"; fi ;;
   face) send "return codriverJam.faceRoute()" ;;
+  start)
+    send "require('beamngEarth/gps').setAutodrive(false) codriverDest.clear() return codriverJam.off()" > /dev/null
+    "$0" place "$START_PLACE" || exit 1
+    sleep 5
+    for i in $(seq 1 30); do "$0" lua "return tostring(beamngEarth_api.ready())" 2>/dev/null | grep -q true && break; sleep 2; done
+    if [ -n "$START_GPS" ]; then
+      "$0" gps "$START_GPS" > /dev/null
+      for i in $(seq 1 30); do "$0" gps 2>/dev/null | grep -q "規劃中\|沒有 GPS" || break; sleep 2; done
+      "$0" face
+    fi
+    "$0" panel off > /dev/null
+    "$0" gps ;;
   window)
     w=${2:-1280}; h=${3:-720}
     send "settings.setValue('GraphicDisplayModes', 'Window') settings.setValue('GraphicDisplayResolutions', '$w $h') core_settings_graphic.applyGraphicsState() return '視窗模式 $w x $h'" ;;
   fullscreen)
     send "settings.setValue('GraphicDisplayResolutions', '1920 1080') settings.setValue('GraphicDisplayModes', 'Borderless') core_settings_graphic.applyGraphicsState() return '無邊框全螢幕 1920 x 1080'" ;;
+  day)
+    h=${2:-13}
+    # BeamNG 的時間是 0～1 的比例，正午 = 0；Earth 的天空改成 manual（存在設定裡），不然它會改回真實時間
+    send "local h = $h local st = beamngEarth_settings if st and st.set then st.set('skyMode', 'manual') end local ok, sky = pcall(require, 'beamngEarth/sky') if ok and sky.setMode then sky.setMode('manual') end core_environment.setTimeOfDay({time = ((h - 12) / 24) % 1, play = false}) return string.format('固定在 %02d:00（時間不走）', h)" ;;
   pause)  send "simTimeAuthority.pause(true) return 'paused'" ;;
   resume) send "simTimeAuthority.pause(false) simTimeAuthority.set(1) return 'running'" ;;
   reset)  send "resetGameplay(0) return 'reset'" ;;

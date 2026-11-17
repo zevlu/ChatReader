@@ -61,8 +61,9 @@ if [ -n "$START_GPS" ]; then
   for i in $(seq 1 10); do "$HERE/bng" face 2>/dev/null | grep -q "車頭轉向" && { say "車頭已轉向導航路線"; break; }; sleep 2; done
 fi
 
-# 展示畫面乾淨：關掉 Earth 的除錯面板（要用時 bng panel）
+# 展示畫面乾淨：關掉 Earth 的除錯面板（要用時 bng panel）；固定白天（Earth 預設跟真實時間，晚上全黑）
 "$HERE/bng" panel off > /dev/null
+"$HERE/bng" day "${GAME_HOUR:-13}" > /dev/null
 
 # 7. OutGauge（codriver-dgx.conf 的 OUTGAUGE_HOST／PORT）
 say "OutGauge 設定..."; "$HERE/bng" outgauge
