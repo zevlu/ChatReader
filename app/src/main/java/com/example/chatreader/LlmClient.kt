@@ -53,7 +53,17 @@ object LlmClient {
     private const val TAG = "LlmClient"
     private const val MODEL = "qwen3.8-flash-next"
 
-    fun isConfigured() = BuildConfig.IAI_BASE.isNotBlank() && BuildConfig.IAI_KEY.isNotBlank()
+    /** 連線設定（2026-11-17）：drive 版用 AiSource 切換 iAI Hub ↔ DGX */
+    data class Endpoint(val base: String, val key: String, val model: String)
+
+    /** null = 用 local.properties 的 iAI Hub（friend 版一直是 null，行為不變） */
+    @Volatile var endpointOverride: Endpoint? = null
+
+    private fun base() = endpointOverride?.base ?: BuildConfig.IAI_BASE
+    private fun key() = endpointOverride?.key ?: BuildConfig.IAI_KEY
+    private fun model() = endpointOverride?.model?.ifBlank { null } ?: MODEL
+
+    fun isConfigured() = base().isNotBlank() && key().isNotBlank()
 
     /**
      * 送出一次對話，回傳 AI 的回答（已去掉頭尾空白）。
@@ -104,7 +114,7 @@ object LlmClient {
             throw LlmException("沒有設定 IAI_BASE／IAI_KEY：請在 local.properties 加上後按 Sync，再重新安裝")
         }
         val body = JSONObject().apply {
-            put("model", MODEL)
+            put("model", model())
             put("temperature", temperature)
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", system))
@@ -113,7 +123,7 @@ object LlmClient {
             if (!thinking) put("chat_template_kwargs", JSONObject().put("enable_thinking", false))
         }
 
-        val url = URL(BuildConfig.IAI_BASE.trimEnd('/') + "/chat/completions")
+        val url = URL(base().trimEnd('/') + "/chat/completions")
         val conn = url.openConnection() as HttpURLConnection
         try {
             conn.requestMethod = "POST"
@@ -121,7 +131,7 @@ object LlmClient {
             conn.readTimeout = readTimeoutMs
             conn.doOutput = true
             conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            conn.setRequestProperty("Authorization", "Bearer ${BuildConfig.IAI_KEY}")
+            conn.setRequestProperty("Authorization", "Bearer ${key()}")
             conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
 
             val code = conn.responseCode
@@ -140,6 +150,8 @@ object LlmClient {
             return content
         } catch (e: UnknownHostException) {
             throw LlmException("連不到伺服器 ${url.host}，請檢查網路")
+        } catch (e: java.net.ConnectException) {
+            throw LlmException("連不到 AI 伺服器 ${url.host}:${url.port}（用 DGX 時要先接 USB 並執行 adb reverse）")
         } catch (e: SocketTimeoutException) {
             throw LlmException("連線逾時（超過 ${readTimeoutMs / 1000} 秒）")
         } finally {

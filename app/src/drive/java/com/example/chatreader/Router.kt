@@ -35,12 +35,15 @@ object Router {
         "座椅", "椅子", "音量", "大聲", "小聲", "車燈", "大燈", "雨刷", "除霧",
     )
 
-    fun isConfigured() = BuildConfig.SYS1_URL.isNotBlank() && BuildConfig.SYS1_KEY.isNotBlank()
+    /** AI 來源是 DGX 時，路由也交給 DGX 的模型判斷（AI 全部跑在 DGX 上）；否則用 System One */
+    fun isConfigured() = if (AiSource.useDgx) LlmClient.isConfigured()
+                         else BuildConfig.SYS1_URL.isNotBlank() && BuildConfig.SYS1_KEY.isNotBlank()
 
     /** 在背景執行緒呼叫 */
     fun decide(task: String): Decision {
         val t0 = System.currentTimeMillis()
         lastNoul = null
+        if (AiSource.useDgx) return decideDgx(task, t0)
         if (!isConfigured()) return rule(task, t0, "規則（未設定 System One）")
         return try {
             val body = JSONObject().apply {
@@ -72,11 +75,38 @@ object Router {
             Log.i(TAG, "System One 回應：$text")
             val cloud = parseCloud(JSONObject(text))
                 ?: return rule(task, t0, "規則（System One 格式不符）")
-            val p = lastNoul?.let { "雲端機率 %.2f".format(it) } ?: ""
+            val p = lastNoul?.let { "大模型機率 %.2f".format(it) } ?: ""
             Decision(if (cloud) Route.CLOUD else Route.PHONE, System.currentTimeMillis() - t0, "System One $p".trim(), text.take(200))
         } catch (e: Exception) {
             Log.w(TAG, "System One 失敗，改用規則", e)
             rule(task, t0, "規則（System One 連不上）")
+        }
+    }
+
+    /** DGX 路由的提示詞（2026-11-17）：判斷標準跟 System One 一樣，車輛控制走手機、其他走大模型 */
+    private val DGX_PROMPT = """
+        你是車上 AI 副駕的「路由器」，只判斷駕駛這句話要交給誰處理：
+        - car：調整車子的設備，例如冷氣、溫度、好冷好熱、風量、車窗、後照鏡、座椅、音量、車燈、雨刷、除霧，要即時處理。
+        - app：其他所有事情，例如找約定、導航、問還要多久、傳訊息、通知朋友遲到、聊天。
+        只輸出 JSON，不要任何說明：{"route":"car"} 或 {"route":"app"}
+    """.trimIndent()
+
+    /** 用 DGX 上的模型（LlmClient，AiSource = DGX）判斷；失敗就改用關鍵字規則 */
+    private fun decideDgx(task: String, t0: Long): Decision {
+        val name = "DGX ${AiSource.dgxModel}"
+        return try {
+            val content = LlmClient.chat(DGX_PROMPT, task, temperature = 0.0)
+            Log.i(TAG, "DGX 路由回應：$content")
+            val route = runCatching { LlmClient.extractJson(content).optString("route") }.getOrDefault(content).lowercase()
+            val car = when {
+                route.contains("car") -> true
+                route.contains("app") -> false
+                else -> return rule(task, t0, "規則（$name 格式不符）")
+            }
+            Decision(if (car) Route.PHONE else Route.CLOUD, System.currentTimeMillis() - t0, name, content.take(200))
+        } catch (e: Exception) {
+            Log.w(TAG, "DGX 路由失敗，改用規則", e)
+            rule(task, t0, "規則（$name 連不上）")
         }
     }
 

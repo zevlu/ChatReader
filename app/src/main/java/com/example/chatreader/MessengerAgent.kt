@@ -110,6 +110,9 @@ object MessengerAgent {
 
     @Volatile var busy = false
         private set
+
+    /** drive flavor：使用者取消傳送時，把輸入框清空（friend 維持「文字留著給使用者自己改」） */
+    @Volatile var clearOnCancel = false
     @Volatile private var cancelled = false
 
     private val main = Handler(Looper.getMainLooper())
@@ -782,7 +785,19 @@ object MessengerAgent {
                 overlay?.showRunning("送出中…", null)   // 先鎖住，避免連按兩次
                 Thread({ guarded { runSend(service, expected, chatTitle, allowEdit) } }, "MessengerAgentSend").start()
             }
-            val cancel: () -> Unit = { finish("已取消：文字留在輸入框，你可以自己修改或送出") }
+            val cancel: () -> Unit = {
+                if (clearOnCancel) {
+                    Thread({
+                        guarded {
+                            val e = root(service)?.let { findEdit(it) }
+                            val ok = e != null && setText(e, "")      // 只清文字，不按任何按鈕
+                            finish(if (ok) "已取消：已清掉輸入框，沒有送出" else "已取消：沒有送出（輸入框沒清掉，請手動刪除）")
+                        }
+                    }, "MessengerAgentCancel").start()
+                } else {
+                    finish("已取消：文字留在輸入框，你可以自己修改或送出")
+                }
+            }
             setAnswers(send, null, cancel)
             overlay?.showConfirm(
                 text,

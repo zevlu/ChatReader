@@ -157,11 +157,13 @@ object CarMate {
         initialized = true
         app = ctx.applicationContext
         PhoneModel.load(app)
+        AiSource.load(app)
         Voice.init(app)
         AssistantBubble.onTap = { listenCommand() }
         AssistantBubble.onLongPress = { closeAssistant() }
         HandsFree.onWake = { rest -> onWake(rest) }
         MessengerAgent.onAsk = { kind, _, _ -> onAgentAsk(kind) }
+        MessengerAgent.clearOnCancel = true   // 說「取消」時清掉 Messenger 輸入框（friend 版不受影響）
         MessengerAgent.onStatus = { msg -> onAgentStatus(msg) }
         MessengerAgent.onPlaceList = { name -> relaunchWithPlace(name) }
         DashServer.start(app)
@@ -303,7 +305,8 @@ object CarMate {
         update()
         Thread {
             val dec = Router.decide(text)
-            val where = if (dec.route == Router.Route.PHONE) "B 手機・車輛控制" else "A 雲端・App 操作"
+            val where = if (dec.route == Router.Route.PHONE) "B 手機・車輛控制"
+                        else if (AiSource.useDgx) "A DGX・App 操作" else "A 雲端・App 操作"
             main.post {
                 lastRouteLabel = "🔀 $where"
                 lastRouteDetail = "${dec.source}・${dec.ms} ms"
@@ -378,7 +381,7 @@ object CarMate {
 
     /** A 雲端：原本的 App 操作流程。在背景執行緒呼叫 */
     private fun handleCloud(text: String) {
-        if (!LlmClient.isConfigured()) { main.post { say("AI 還沒設定好，請檢查 local.properties。") }; return }
+        if (!LlmClient.isConfigured()) { main.post { say("AI 還沒設定好，請檢查 local.properties 或設定裡的 AI 來源。") }; return }
         val nowDest = if (webMode) webRouteAppt?.place?.takeIf { navReq?.optString("cmd") == "plan" } else routeDest.ifEmpty { null }
         val trip = listOfNotNull(
             appointment?.let { "跟${it.friend}約${it.time}在${it.place}" },
@@ -415,9 +418,16 @@ object CarMate {
         }
     }
 
-    /** 設定頁的「測試連線」：測手機模型和 System One，結果寫進紀錄 */
+    /** 設定頁的「測試連線」：測 AI（iAI 或 DGX）、手機模型和 System One，結果寫進紀錄 */
     fun testConnections(done: (String) -> Unit) {
         Thread {
+            val src = AiSource.label()
+            val ai = if (!LlmClient.isConfigured()) "AI（$src）：未設定" else {
+                val t0 = System.currentTimeMillis()
+                runCatching { LlmClient.chat("只回答「OK」", "測試", temperature = 0.0) }.fold(
+                    { "AI（$src）：✅ ${System.currentTimeMillis() - t0} ms（回答：${it.take(20)}）" },
+                    { "AI（$src）：❌ ${it.message}" })
+            }
             val phone = if (!PhoneModel.isSet()) "手機模型：未設定位址" else {
                 val t0 = System.currentTimeMillis()
                 runCatching { PhoneModel.chat("只回答「OK」", "測試", 0.0) }.fold(
@@ -425,8 +435,8 @@ object CarMate {
                     { "手機模型：❌ ${it.message}" })
             }
             val d = Router.decide("把冷氣調低一度")
-            val sys1 = "路由器：${d.source}，判斷「冷氣調低」→ ${if (d.route == Router.Route.PHONE) "手機" else "雲端"}（${d.ms} ms）"
-            main.post { log(phone); log(sys1); done("$phone\n$sys1") }
+            val sys1 = "路由器：${d.source}，判斷「冷氣調低」→ ${if (d.route == Router.Route.PHONE) "手機" else if (AiSource.useDgx) "DGX" else "雲端"}（${d.ms} ms）"
+            main.post { log(ai); log(phone); log(sys1); done("$ai\n$phone\n$sys1") }
         }.start()
     }
 
@@ -726,6 +736,11 @@ object CarMate {
                     say("送出了，幫你切回車機畫面。")
                     main.postDelayed({ bringCarMateFront() }, 1500)
                 }
+            }
+            msg.startsWith("已取消") -> {
+                log("✉️ 已取消，沒有送出")
+                say("好，沒有送出。")
+                main.postDelayed({ if (navigating && !webMode) launchPackage(MAPS) else bringCarMateFront() }, 1200)
             }
             msg.startsWith("❌") -> say("出了點問題：" + msg.removePrefix("❌").trim())
         }
@@ -1189,6 +1204,10 @@ object CarMate {
                 "reset" -> resetForDemo()
                 "jam" -> onJam()                                   // BeamNG 橋接程式：塞車了
                 "jamClear" -> if (navigating) log("🚗 BeamNG 車流恢復")
+                "navSay" -> {   // 2026-11-17：網頁車機（?unit=1）從遊戲 GPS 路線算出的轉彎提示，用手機唸
+                    val t = j.optString("text").trim()
+                    if (t.isNotEmpty() && navigating && pendingAnswer == null && !chatting) Voice.speak(t)
+                }
             }
             "vehicle" -> {
                 val s = j.optInt("speed", speedKmh)
@@ -1205,12 +1224,26 @@ object CarMate {
                 }
             }
             "nav" -> onWebNav(j)
+            // 2026-11-17：BeamNG 橋接送來遊戲裡的位置＋GPS（每秒）和 GPS 路線（路線改變時）。
+            // 只推給網頁車機畫地圖，不呼叫 update()（不然手機畫面每秒重畫）
+            "pose" -> {
+                gamePose = j; gamePoseAt = System.currentTimeMillis()
+                if (DashServer.connected) DashServer.push(stateJson())
+            }
+            "route" -> { gameRoute = j; if (DashServer.connected) DashServer.push(stateJson()) }
         }
     }
+
+    // ── BeamNG 遊戲回報（?unit=1 車機地圖、真實到達時間用） ──
+    private var gamePose: JSONObject? = null     // 橋接送來：遊戲裡的位置＋GPS
+    private var gamePoseAt = 0L                  // 收到的時間；超過 5 秒沒更新就不送給網頁（避免用到舊資料）
+    private var gameRoute: JSONObject? = null    // 橋接送來：遊戲 GPS 的路線
 
     /** 展示站：換下一位來試的人，清掉上一位的約定、路線、對話（不清聯絡人和設定） */
     fun resetForDemo() {
         MessengerAgent.cancel()
+        gamePose = null
+        gameRoute = null
         stopNavWatch()
         pendingAnswer = null
         chatting = false
@@ -1420,6 +1453,9 @@ object CarMate {
         put("agent", if (demoSending) "已填好（模擬），等你說「送出」" else MessengerAgent.history.lastOrNull() ?: "")
         put("station", station)
         put("jam", jamExtra)
+        put("ai", JSONObject().put("source", AiSource.label()).put("model", if (AiSource.useDgx) AiSource.dgxModel else ""))
+        gamePose?.takeIf { System.currentTimeMillis() - gamePoseAt < 5000 }?.let { put("pose", it) }
+        gameRoute?.let { put("route", it) }
         if (demoChats) put("demoChats", DemoChats.toJson(app))
         navReq?.let { put("nav", it) }
         put("navigating", navigating)

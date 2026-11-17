@@ -83,6 +83,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var friendField: EditText
     private lateinit var phoneUrlField: EditText
     private lateinit var phoneModelField: EditText
+    private lateinit var aiBtn: TextView
+    private lateinit var dgxUrlField: EditText
+    private lateinit var dgxModelField: EditText
     private lateinit var testResult: TextView
     private lateinit var handsBtn: TextView
     private lateinit var logView: TextView
@@ -167,6 +170,7 @@ class MainActivity : AppCompatActivity() {
         }
         addView(clockView)
         chipAcc = chip(); chipAi = chip(); chipRouter = chip(); chipPhone = chip()
+        chipAi.setOnClickListener { AiSource.toggle(this@MainActivity); render() }   // 點一下切換 iAI ↔ DGX
         chipHands = chip().apply {
             setOnClickListener { CarMate.setHandsFree(!CarMate.handsFreeWanted); render() }
         }
@@ -287,11 +291,22 @@ class MainActivity : AppCompatActivity() {
             friendField = field("例如：孟澤、老師的名字", CarMate.contacts.joinToString("、"))
             phoneUrlField = field("http://192.168.x.x:8080/v1", PhoneModel.baseUrl)
             phoneModelField = field("模型名稱（llama-server 可留空）", PhoneModel.model)
+            dgxUrlField = field(AiSource.DEFAULT_DGX_BASE, AiSource.dgxBase)
+            dgxModelField = field(AiSource.DEFAULT_DGX_MODEL, AiSource.dgxModel)
+            aiBtn = smallBtn("") {
+                AiSource.save(this@MainActivity, !AiSource.useDgx, dgxUrlField.text.toString(), dgxModelField.text.toString())
+                render()
+            }
             testResult = text("", 13f, MUTED).apply { setPadding(0, dp(6), 0, dp(6)) }
             handsBtn = smallBtn("") { CarMate.setHandsFree(!CarMate.handsFreeWanted); render() }
 
             addView(text("常用聯絡人（幫語音認名字）", 13f, MUTED))
             addView(friendField)
+            addView(text("AI 來源（也可以點上方的「AI」狀態燈切換）", 13f, MUTED).apply { setPadding(0, dp(10), 0, 0) })
+            addView(aiBtn.apply { layoutParams = LinearLayout.LayoutParams(MATCH, WRAP) })
+            addView(text("DGX 模型位址與名稱（手機要 adb reverse tcp:8300 tcp:8300）", 13f, MUTED).apply { setPadding(0, dp(6), 0, 0) })
+            addView(dgxUrlField)
+            addView(dgxModelField)
             addView(text("B 手機模型位址（兩支手機要連同一個 Wi-Fi／熱點）", 13f, MUTED).apply { setPadding(0, dp(10), 0, 0) })
             addView(phoneUrlField)
             addView(phoneModelField)
@@ -333,6 +348,7 @@ class MainActivity : AppCompatActivity() {
     private fun saveAndTest() {
         syncContacts()
         PhoneModel.save(this, phoneUrlField.text.toString(), phoneModelField.text.toString())
+        AiSource.save(this, AiSource.useDgx, dgxUrlField.text.toString(), dgxModelField.text.toString())
         testResult.text = "測試中…"
         CarMate.testConnections { testResult.text = it; render() }
     }
@@ -347,7 +363,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun render() {
         setChip(chipAcc, "無障礙", ChatReaderService.instance != null)
-        setChip(chipAi, "雲端 AI", LlmClient.isConfigured())
+        setChip(chipAi, "AI：${AiSource.label()}", LlmClient.isConfigured())
         setChip(chipRouter, "路由器", Router.isConfigured())
         setChip(chipPhone, "手機模型", PhoneModel.isSet())
         setChip(chipHands, if (HandsFree.enabled) "免持 聆聽中" else "免持", HandsFree.enabled || CarMate.handsFreeWanted)
@@ -398,6 +414,10 @@ class MainActivity : AppCompatActivity() {
             if (HandsFree.enabled) setStroke(dp(4), GREEN)
         }
         micHint.text = if (HandsFree.enabled) "點一下說話・或直接說「副駕」" else "點一下說話"
+
+        if (::aiBtn.isInitialized) aiBtn.text = if (AiSource.useDgx)
+            "🖥 AI 來源：DGX（${AiSource.dgxBase}）— 點一下切回 iAI Hub"
+        else "☁ AI 來源：iAI Hub（學校雲端）— 點一下切到 DGX"
 
         handsBtn.text = when {
             HandsFree.enabled -> "👂 免持喚醒：聆聽中（說「副駕」叫我）— 點一下關閉"

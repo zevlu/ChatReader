@@ -109,6 +109,15 @@
   #micBtn.on { background:#c0392b; border-color:#c0392b; }
   .gameTag { font-size:12px; color:var(--muted); }
   .hint { font-size:13px; color:var(--muted); }
+  /* ?unit=1 車機地圖（Leaflet＋OpenStreetMap，2026-11-17） */
+  #map { display:none; flex:1 1 65%; min-height:0; border-radius:10px; background:#0b101b; color:var(--muted); font-size:14px; }
+  #app.unitOnly #map { display:block; }
+  #app.unitOnly #eta { flex:0 0 auto; }
+  .carIcon, .destIcon { background:none; border:none; }
+  .carArrow { width:30px; height:30px; transition:transform .3s; }
+  .destPin { font-size:26px; line-height:30px; text-align:center; filter:drop-shadow(0 1px 2px #000); }
+  .turnTxt { font-size:24px; font-weight:700; color:var(--accent); }
+  .turnTxt.off { font-size:16px; color:var(--warn); font-weight:400; }
 </style>
 </head>
 <body>
@@ -127,6 +136,7 @@
       <div class="title"><span id="leftTitle">🧭 導航</span><span id="navState">沒有導航</span></div>
       <div id="chats"></div>
       <canvas id="mini"></canvas>
+      <div id="map"></div>
       <div id="eta">說「帶我去逢甲夜市」或「帶我去加油站」</div>
     </div>
     <div class="panel">
@@ -488,7 +498,12 @@ function onState(s) {
   } else $('msg').style.display = 'none';
   $('log').innerHTML = (s.log || []).slice(-5).map(esc).join('<br>');
   renderChats();
-  if (UNIT) unitHandleNav(s.nav); else handleNav(s.nav);
+  if (UNIT) {
+    if (s.pose) lastPoseAt = Date.now();     // 手機只送 5 秒內的 pose，收到就代表遊戲資料是新的
+    unitHandleNav(s.nav);
+    unitAutoArrive(s.pose);
+    renderMap(s);
+  } else handleNav(s.nav);
 }
 function renderCar(kmh, fuel) {
   const $ = id => document.getElementById(id);
@@ -513,7 +528,9 @@ function renderPipe(s) {
   const label = (s.routeLabel || '').replace('🔀', '').trim();
   if (label && !label.includes('判斷中') && label !== pipeRoute) {
     pipeRoute = label;
-    const where = label.includes('手機') ? '🚘 車上的模型' : '☁️ 雲端 AI';
+    const where = label.includes('手機') ? '🚘 車上的模型'
+      : label.includes('DGX') ? '🖥 DGX 本機 AI' + (s.ai && s.ai.model ? `（${s.ai.model}）` : '')
+      : '☁️ 雲端 AI';
     cell('c2', `${where}\n${(s.routeDetail || '').replace(/・/g, ' ')}`, true);
   }
   if (s.say && s.say !== pipeSay && !s.say.endsWith('…')) {
@@ -855,11 +872,31 @@ function localPlan(dest) {   // 離線測試用
 // 真的路線由人在 BeamNG 按 M 設定 GPS。到停靠點／抵達用 Shift+V／Shift+D。（之後再改成讀 BeamNG 的 GPS）
 const UNIT_MIN = 15;     // 預估車程（分鐘）
 const UNIT_KMH = 30;     // 換算公里數用的平均時速
-const unav = { id: -1, dest: '', via: '', viaDone: true, active: false, arrived: false, arriveAt: 0, delay: 0, jam: 0, lastReport: 0 };
-function unitEta() {
-  const minutes = Math.max(1, Math.round((unav.arriveAt - Date.now()) / 60000) + unav.delay + unav.jam);
+// 2026-11-17：DGX 的橋接會把 App 的目的地設到遊戲 GPS，並每秒回報位置／剩餘距離／剩餘時間（state.pose）。
+// 有最近 5 秒內的遊戲 GPS 資料就用真的到達時間；沒有就用上面的 15 分鐘估算當備援。
+const unav = { id: -1, dest: '', via: '', viaDone: true, active: false, arrived: false, arriveAt: 0, delay: 0, jam: 0, lastReport: 0,
+               planAt: 0, planSig: '', planPending: false, arrivedSeq0: null };
+const PLAN_WAIT_MS = 8000;   // 規劃時最多等遊戲 GPS 算好路線幾秒，再回報給手機
+let lastPoseAt = 0;
+function hhmmAfter(minutes) {
   const t = new Date(Date.now() + minutes * 60000);
-  return { km: Math.round(minutes / 60 * UNIT_KMH * 10) / 10, minutes, arrival: String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0') };
+  return String(t.getHours()).padStart(2, '0') + ':' + String(t.getMinutes()).padStart(2, '0');
+}
+/** 最近 5 秒內遊戲回報的 GPS（沒有就 null） */
+function gameGps() {
+  const p = state.pose;
+  if (!p || Date.now() - lastPoseAt > 5000 || !p.gps) return null;
+  return p.gps;
+}
+function gpsSig(g) { return g ? `${g.name}|${g.lat}|${g.lon}` : ''; }
+function unitEta() {
+  const g = gameGps();
+  if (g && g.etaS != null && !g.planning && (unav.active || unav.dest)) {
+    const minutes = Math.max(1, Math.round(g.etaS / 60)) + unav.delay + unav.jam;
+    return { km: Math.round((g.remainingM || 0) / 100) / 10, minutes, arrival: hhmmAfter(minutes), real: true };
+  }
+  const minutes = Math.max(1, Math.round((unav.arriveAt - Date.now()) / 60000) + unav.delay + unav.jam);
+  return { km: Math.round(minutes / 60 * UNIT_KMH * 10) / 10, minutes, arrival: hhmmAfter(minutes), real: false };
 }
 function unitHandleNav(n) {
   if (!n) return;
@@ -867,10 +904,168 @@ function unitHandleNav(n) {
     unav.id = n.id; unav.dest = n.dest || ''; unav.via = n.via || (n.viaGas ? '加油站' : '');
     unav.viaDone = !unav.via; unav.active = false; unav.arrived = false; unav.delay = 0;
     unav.arriveAt = Date.now() + UNIT_MIN * 60000;
-    post({ type: 'nav', id: n.id, status: 'planned', dest: unav.dest, via: unav.via, ...unitEta() });
+    // 先不回報：等橋接把目的地設到遊戲 GPS、路線算好（最多 PLAN_WAIT_MS），副駕唸的分鐘數才會是真的
+    unav.planPending = true; unav.planAt = Date.now(); unav.planSig = gpsSig(gameGps());
   }
-  if (n.cmd === 'cancel' || n.cmd === 'done') { if (n.cmd === 'cancel') unav.dest = ''; unav.active = false; return; }
-  if (n.start && !unav.active && !unav.arrived) { unav.active = true; unav.lastReport = 0; }
+  if (n.cmd === 'cancel' || n.cmd === 'done') { if (n.cmd === 'cancel') unav.dest = ''; unav.active = false; unav.planPending = false; return; }
+  if (n.start && !unav.active && !unav.arrived) {
+    unav.active = true; unav.lastReport = 0;
+    unav.arrivedSeq0 = state.pose ? (state.pose.arrivedSeq || 0) : null;   // 之後遊戲 GPS 抵達次數變多 = 到了
+  }
+}
+/** 規劃中：遊戲 GPS 換成新目的地且算好路線，或等太久，就回報 planned */
+function unitPlanTick() {
+  if (!unav.planPending) return;
+  const g = gameGps();
+  const ready = g && g.etaS != null && !g.planning && gpsSig(g) !== unav.planSig;
+  if (!ready && Date.now() - unav.planAt < PLAN_WAIT_MS) return;
+  unav.planPending = false;
+  if (!ready) unav.arriveAt = Date.now() + UNIT_MIN * 60000;   // 沒等到：用 15 分鐘估算
+  post({ type: 'nav', id: unav.id, status: 'planned', dest: unav.dest, via: unav.via, ...unitEta() });
+}
+/** 遊戲 GPS 抵達（arrivedSeq 變多）就自動抵達，不用按 Shift+D */
+function unitAutoArrive(p) {
+  if (!unav.active || !p) return;
+  const seq = p.arrivedSeq || 0;
+  if (unav.arrivedSeq0 == null) { unav.arrivedSeq0 = seq; return; }   // 開始導航時還沒有遊戲資料：以第一次收到的為準
+  if (seq > unav.arrivedSeq0) {
+    if (unav.via && !unav.viaDone) unav.viaDone = true;   // 遊戲 GPS 只設最後目的地，到了就算停靠點也過了
+    showBanner(`🏁 到了${unav.dest}`, 3000);
+    unitArrive();
+  }
+}
+// ── 車機地圖（Leaflet，只在 ?unit=1 載入） ──
+let lmap = null, carMarker = null, destMarker = null, routeLine = null, routeVer = '', followPausedUntil = 0;
+// 路線換成公尺座標，用來「只畫還沒開的路」和算轉彎（2026-11-17）
+let routePts = null, routeXY = null, routeCum = null, routeIdx = 0, routeLat0 = 0;
+let turnInfo = null, offRoute = false, turnS = -1, turnStage = 0;
+function toXY(lat, lon) { return [lon * 111320 * Math.cos(routeLat0 * Math.PI / 180), lat * 110540]; }
+function prepRoute(points) {
+  routePts = points; routeLat0 = points[0][0];
+  routeXY = points.map(p => toXY(p[0], p[1]));
+  routeCum = [0];
+  for (let i = 1; i < routeXY.length; i++)
+    routeCum.push(routeCum[i - 1] + Math.hypot(routeXY[i][0] - routeXY[i - 1][0], routeXY[i][1] - routeXY[i - 1][1]));
+  routeIdx = 0; turnS = -1; turnStage = 0;
+}
+function clearRoute() { routePts = routeXY = routeCum = null; routeIdx = 0; turnInfo = null; offRoute = false; turnS = -1; turnStage = 0; }
+/** 車子投影到路線上：回傳 { i: 第幾段, s: 沿路線的距離, d: 離路線幾公尺 } */
+function locateOnRoute(lat, lon) {
+  const [x, y] = toXY(lat, lon);
+  const scan = (lo, hi) => {
+    let best = null;
+    for (let i = lo; i < hi; i++) {
+      const [ax, ay] = routeXY[i], [bx, by] = routeXY[i + 1];
+      const dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+      const t = L2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L2)) : 0;
+      const d = Math.hypot(x - (ax + t * dx), y - (ay + t * dy));
+      if (!best || d < best.d) best = { i, s: routeCum[i] + t * Math.sqrt(L2), d };
+    }
+    return best;
+  };
+  const n = routeXY.length - 1;
+  let r = scan(Math.max(0, routeIdx - 3), Math.min(n, routeIdx + 80));   // 先找目前位置附近（往前多看一點）
+  if (!r || r.d > 80) r = scan(0, n);                                    // 離太遠：整條找
+  if (r) routeIdx = r.i;
+  return r;
+}
+/** 沿路線 s 公尺處的位置（公尺座標） */
+function pointAt(s) {
+  const n = routeCum.length - 1;
+  s = Math.max(0, Math.min(routeCum[n], s));
+  let i = Math.max(0, Math.min(n - 1, routeIdx));
+  while (i > 0 && routeCum[i] > s) i--;
+  while (i < n - 1 && routeCum[i + 1] < s) i++;
+  const seg = routeCum[i + 1] - routeCum[i], t = seg ? (s - routeCum[i]) / seg : 0;
+  return [routeXY[i][0] + t * (routeXY[i + 1][0] - routeXY[i][0]), routeXY[i][1] + t * (routeXY[i + 1][1] - routeXY[i][1])];
+}
+function bearing(a, b) { return Math.atan2(b[0] - a[0], b[1] - a[1]) * 180 / Math.PI; }   // 0 = 北，順時針
+/** 從 s0 往前找 1.2 公里內第一個轉彎（前後 20 公尺的方向差超過 50 度） */
+function nextTurn(s0) {
+  const total = routeCum[routeCum.length - 1];
+  for (let s = s0 + 10; s < Math.min(s0 + 1200, total - 5); s += 10) {
+    let d = bearing(pointAt(s), pointAt(s + 20)) - bearing(pointAt(s - 20), pointAt(s));
+    d = ((d + 540) % 360) - 180;
+    if (Math.abs(d) >= 50) {
+      const right = d > 0, uturn = Math.abs(d) > 140;
+      return { s, dist: s - s0, arrow: uturn ? '⤺' : right ? '↱' : '↰', word: uturn ? '迴轉' : right ? '右轉' : '左轉' };
+    }
+  }
+  return null;
+}
+/** 轉彎語音：250 公尺內唸一次「前方 X 公尺右轉」，60 公尺內再唸「右轉」 */
+function turnVoice(t) {
+  if (!t || !unav.active) return;
+  if (Math.abs(t.s - turnS) > 40) { turnStage = 0; }   // 換了一個新的轉彎
+  turnS = t.s;
+  const sayTurn = msg => {
+    if (!document.getElementById('navVoice').checked) return;
+    if (VOICE === 'phone') post({ type: 'action', name: 'navSay', text: msg }); else speakNav(msg);
+  };
+  if (turnStage === 0 && t.dist <= 250 && t.dist > 80) { turnStage = 1; sayTurn(`前方 ${Math.round(t.dist / 50) * 50} 公尺${t.word}`); }
+  else if (turnStage < 2 && t.dist <= 60) { turnStage = 2; sayTurn(`前面${t.word}`); }
+}
+const CAR_SVG = '<svg class="carArrow" viewBox="0 0 24 24"><path d="M12 2 L20 21 L12 16.5 L4 21 Z" fill="#4ea1ff" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+function loadLeaflet() {
+  const base = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/';
+  const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = base + 'leaflet.min.css';
+  document.head.appendChild(css);
+  const js = document.createElement('script'); js.src = base + 'leaflet.min.js';
+  js.onload = initMap;
+  js.onerror = () => { document.getElementById('map').textContent = '地圖載入失敗（需要網路）'; };
+  document.head.appendChild(js);
+}
+function initMap() {
+  const el = document.getElementById('map');
+  const p = state.pose;
+  lmap = L.map(el, { zoomControl: true }).setView(p ? [p.lat, p.lon] : [22.67349, 120.30474], 16);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap contributors' }).addTo(lmap);
+  // 使用者拖曳地圖：暫停跟隨，放開 10 秒後恢復
+  lmap.on('dragstart', () => { followPausedUntil = Infinity; });
+  lmap.on('dragend', () => { followPausedUntil = Date.now() + 10000; });
+  setTimeout(() => lmap.invalidateSize(), 300);
+  addEventListener('resize', () => lmap.invalidateSize());
+  renderMap(state);
+}
+function renderMap(s) {
+  if (!lmap) return;
+  const p = s.pose;
+  if (p && p.lat != null && p.lon != null) {
+    const ll = [p.lat, p.lon];
+    if (!carMarker) carMarker = L.marker(ll, { interactive: false, zIndexOffset: 1000,
+      icon: L.divIcon({ className: 'carIcon', html: CAR_SVG, iconSize: [30, 30], iconAnchor: [15, 15] }) }).addTo(lmap);
+    else carMarker.setLatLng(ll);
+    const a = carMarker.getElement() && carMarker.getElement().querySelector('.carArrow');
+    if (a) a.style.transform = `rotate(${p.heading || 0}deg)`;
+    if (Date.now() > followPausedUntil) lmap.panTo(ll, { animate: true, duration: 0.5 });
+  }
+  const g = p && p.gps;
+  if (g && g.lat != null && g.lon != null) {
+    if (!destMarker) destMarker = L.marker([g.lat, g.lon], { interactive: false,
+      icon: L.divIcon({ className: 'destIcon', html: '<div class="destPin">🏁</div>', iconSize: [30, 30], iconAnchor: [8, 28] }) }).addTo(lmap);
+    else destMarker.setLatLng([g.lat, g.lon]);
+  } else if (p && destMarker) { destMarker.remove(); destMarker = null; }   // 有遊戲資料但沒有 GPS 目的地：拿掉
+  const r = s.route;
+  const ver = r ? String(r.version) : '';
+  if (ver !== routeVer) {
+    routeVer = ver;
+    if (routeLine) { routeLine.remove(); routeLine = null; }
+    clearRoute();
+    if (r && r.version !== 'none' && Array.isArray(r.points) && r.points.length > 1) {
+      prepRoute(r.points);
+      routeLine = L.polyline(r.points, { color: '#3b82f6', weight: 6, opacity: 0.85 }).addTo(lmap);
+    }
+  }
+  // 只畫還沒開的路；算下一個轉彎
+  if (routeLine && routeXY && p && p.lat != null) {
+    const loc = locateOnRoute(p.lat, p.lon);
+    if (loc) {
+      offRoute = loc.d > 60;
+      if (!offRoute) routeLine.setLatLngs([[p.lat, p.lon], ...routePts.slice(loc.i + 1)]);
+      turnInfo = unav.active && !offRoute ? nextTurn(loc.s) : null;
+      turnVoice(turnInfo);
+    }
+  }
 }
 function unitVia() {
   if (!unav.active || unav.viaDone) { note('（測試）現在沒有停靠點'); return; }
@@ -884,6 +1079,7 @@ function unitArrive() {
   post({ type: 'nav', id: unav.id, status: 'arrived', dest: unav.dest });
 }
 function unitNavTick(now) {
+  unitPlanTick();
   const etaEl = document.getElementById('eta'), navState = document.getElementById('navState');
   if (!unav.dest) {
     navState.textContent = '沒有導航';
@@ -894,11 +1090,25 @@ function unitNavTick(now) {
   }
   if (unav.arrived) { navState.textContent = '已抵達'; etaEl.innerHTML = `🏁 已抵達 <b>${esc(unav.dest)}</b>`; return; }
   const e = unitEta();
+  const g = gameGps();
   const viaTxt = unav.via && !unav.viaDone ? `（先到${esc(unav.via)}）` : '';
-  navState.textContent = unav.active ? '導航中' : '等你確認';
-  etaEl.innerHTML = `${unav.active ? '▶' : '⏸ 預覽'} <b>${esc(unav.dest)}</b>${viaTxt}<br>約 ${e.minutes} 分鐘・預計 <b>${e.arrival}</b> 到` +
+  navState.textContent = unav.planPending ? '規劃中' : unav.active ? '導航中' : '等你確認';
+  const gpsHint = g && g.planning ? '🗺 遊戲 GPS 路線規劃中…'
+    : g ? '🗺 遊戲 GPS 已設定，照路面藍色箭頭開'
+    : unav.active ? '遊戲 GPS 還沒設定（地名可能查不到）'
+    : '🗺 正在把目的地設到遊戲 GPS…';
+  const viaHint = unav.via && !unav.viaDone ? `<br><span class="hint">遊戲 GPS 只設最後目的地；到「${esc(unav.via)}」請按 Shift+V</span>` : '';
+  etaEl.innerHTML = `${unav.active ? '▶' : '⏸ 預覽'} <b>${esc(unav.dest)}</b>${viaTxt}<br>` +
+    (unav.planPending ? '路線規劃中…'
+      : (e.real ? `還有 ${e.km} 公里・` : '') + `約 ${e.minutes} 分鐘・預計 <b>${e.arrival}</b> 到`) +
     (unav.delay + unav.jam ? `<br><span style="color:var(--warn)">🚦 塞車，多了 ${unav.delay + unav.jam} 分鐘</span>` : '') +
-    `<br><span class="hint">🎮 請在 BeamNG 按 M，把 GPS 設到「${esc(unav.via && !unav.viaDone ? unav.via : unav.dest)}」</span>`;
+    `<br><span class="hint">${gpsHint}</span>` + viaHint;
+  if (unav.active && routeXY) {
+    const tt = offRoute ? '<div class="turnTxt off">偏離路線，等遊戲 GPS 重新規劃…</div>'
+      : turnInfo ? `<div class="turnTxt">${turnInfo.arrow} ${Math.max(10, Math.round(turnInfo.dist / 10) * 10)} 公尺後${turnInfo.word}</div>`
+      : '<div class="turnTxt">⬆ 直走</div>';
+    etaEl.innerHTML = tt + etaEl.innerHTML;
+  }
   if (unav.active && now - unav.lastReport > 2000) {
     unav.lastReport = now;
     post({ type: 'nav', id: unav.id, status: 'progress', minutesLeft: e.minutes, kmLeft: e.km, arrival: e.arrival });
@@ -1079,9 +1289,11 @@ if (ST) {
     const lb = fb.querySelector(`button[onclick="action('listen')"]`);
     lb.classList.add('primary'); fb.insertBefore(lb, fb.firstChild);
   }
-  document.getElementById('navVoice').parentElement.style.display = 'none';   // BeamNG 自己有導航語音
+  // 轉彎語音：從遊戲 GPS 路線算出來（-noui 下遊戲沒有導航介面）；手機語音模式由手機唸
+  document.getElementById('navVoice').parentElement.lastChild.textContent = ' 轉彎語音';
   document.querySelector('#unit .panel:last-child .title span').textContent = '✉️ 訊息與車況（🎮 BeamNG）';
   renderCar(0, 0);
+  loadLeaflet();   // 車機地圖：遊戲裡的位置、GPS 路線、目的地
 } else {
   document.getElementById('legend').textContent = '↑↓←→ 開車　按住空白鍵 說話　A 自動駕駛　Shift+T 塞車　Shift+G 油量 12%';
 }
