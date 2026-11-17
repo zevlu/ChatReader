@@ -13,9 +13,14 @@ cat <<'EOF'
   bng place                 列出預設地點
   bng place <名稱>          傳送到預設地點（例：bng place 高雄車站）
   bng tp <緯度> <經度>      傳送到任意經緯度（Google 地圖右鍵可複製經緯度）
+  bng gps <地點名稱>        遊戲內 GPS 導航到預設地點（路面會出現箭頭；路線由 Earth 用 OSRM 規劃，要有網路）
+  bng gps <緯度> <經度>     GPS 導航到任意經緯度
+  bng gps                   目前 GPS 目的地、剩餘距離、預估時間
+  bng gps off               取消 GPS 導航
   bng car <車型> [配置]     換車（例：bng car etk800、bng car vivace）；bng car 列出常用車型
   bng traffic <台數|off>    叫出交通車（建議 ≤ 10）或全部移除
-  bng jam on|off            塞車模式（交通車限速 3 m/s ≈ 11 km/h）／恢復
+  bng jam on [加幾台]       塞車：再加車（預設 5 台，總數最多 10）、車流限速約 7 km/h、新車生成在你前方
+  bng jam off               車流恢復正常速度
   bng outgauge              套用 codriver-dgx.conf 的 OutGauge 設定（OUTGAUGE_HOST／PORT）
   bng outgauge <IP> [port]  暫時改送到別的位址（不改設定檔）
   bng panel [off]           叫出／隱藏 BeamNG.Earth 資訊面板（可輸入經緯度按 Teleport）
@@ -41,8 +46,12 @@ send() {
   return 1
 }
 
-# 預設地點（緯度 經度）—— 概略座標，展示起點請換成實際量好的
+# 預設地點（緯度 經度）
+#   楠梓車站麥當勞、高雄大學路：OpenStreetMap（Nominatim）查到的座標，2026-11-17
+#   其他：概略座標
 declare -A PLACES=(
+  [楠梓車站麥當勞]="22.727135 120.326549"
+  [高雄大學路]="22.730324 120.284838"
   [高雄車站]="22.6394 120.3025"
   [高科大建工]="22.6505 120.3285"
   [85大樓]="22.6116 120.3006"
@@ -58,6 +67,15 @@ case "$1" in
   tp)
     [ -n "$3" ] || { usage; exit 1; }
     send "local ok, why = beamngEarth_api.teleport($2, $3, '${4:-CoDriver}') return 'teleport ' .. tostring(ok) .. ' ' .. tostring(why or '')" ;;
+  gps)
+    if [ -z "$2" ]; then
+      send "local g = beamngEarth_api.gps() if not g then return '沒有 GPS 目的地' end return string.format('GPS → %s（%.5f, %.5f）剩 %s 公尺、約 %s 秒%s', tostring(g.name), g.lat, g.lon, g.remaining and string.format('%.0f', g.remaining) or '?', g.eta and string.format('%.0f', g.eta) or '?', g.planning and '（規劃中）' or '')"
+    elif [ "$2" = off ]; then send "beamngEarth_api.gpsClear() return 'GPS 已取消'"
+    else
+      if [ -n "${PLACES[$2]}" ]; then set -- gps ${PLACES[$2]} "$2"; fi
+      [ -n "$3" ] || { echo "沒有這個地點：$2（bng place 看清單，或給 緯度 經度）"; exit 1; }
+      send "local ok, why = beamngEarth_api.gpsSet($2, $3, '${4:-目的地}') return 'GPS → ${4:-目的地}：' .. tostring(ok) .. ' ' .. tostring(why or '')"
+    fi ;;
   car)
     if [ -z "$2" ]; then echo "常用車型：pickup（目前）etk800 etkc vivace covet bluebuck legran midsize fullsize van sunburst2 bastion"; exit 0; fi
     cfg=${3:+, config = 'vehicles/$2/$3.pc'}
@@ -66,8 +84,15 @@ case "$1" in
     if [ "$2" = off ]; then send "gameplay_traffic.deleteVehicles() return 'traffic off'"
     else n=${2:-8}; send "settings.setValue('trafficSimpleVehicles', true) settings.setValue('trafficAmount', $n) gameplay_traffic.setupTraffic($n) return 'traffic $n (生成中，前 30 秒會比較卡)'"; fi ;;
   jam)
-    if [ "$2" = on ]; then send "gameplay_traffic.setTrafficVars({speedLimit = 3}) return 'jam on'"
-    else send "gameplay_traffic.setTrafficVars({speedLimit = -1}) return 'jam off'"; fi ;;
+    # on：在現有車流上再加車（總數最多 10 台，DGX 超過 12 台會掉 FPS）、交通車限速 2 m/s（約 7 km/h），
+    #     新出現的車偏向生成在你前方、跟你同方向（spawnDirBias 負值 = 離你而去），把你擋住
+    # off：恢復預設（speedLimit -1、spawnValue 1、spawnDirBias 0.2）；多出來的車留著，要移除用 bng traffic off
+    if [ "$2" = on ]; then
+      n=${3:-5}
+      send "local cur = gameplay_traffic.getNumOfTraffic() or 0 local add = math.max(0, math.min($n, 10 - cur)) if add > 0 then gameplay_traffic.setupTraffic(add, {keepCurrent = true, simpleVehs = true}) end gameplay_traffic.setTrafficVars({speedLimit = 2, spawnValue = 3, spawnDirBias = -0.8}) return string.format('jam on：原本 %d 台，加 %d 台（生成中，前 30 秒會比較卡），限速 7 km/h', cur, add)"
+    else
+      send "gameplay_traffic.setTrafficVars({speedLimit = -1, spawnValue = 1, spawnDirBias = 0.2}) return 'jam off：車流恢復正常速度'"
+    fi ;;
   outgauge)
     host=${2:-$OUTGAUGE_HOST}; port=${3:-$OUTGAUGE_PORT}
     # 設定值存進 BeamNG 的設定；protocols.init() 讓玩家的車馬上改用新位址（只有玩家坐的車會送）

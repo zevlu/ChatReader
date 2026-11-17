@@ -84,14 +84,17 @@ def main():
                     help="BeamNG OutGauge 的 port（預設 4444）")
     ap.add_argument("--phone", default=env("CODRIVER_PHONE", "http://127.0.0.1:8765"),
                     help="手機 CoDriver 的位址（adb forward 後是 127.0.0.1:8765）")
-    ap.add_argument("--jam-kmh", type=float, default=10.0, help="低於這個時速算走走停停")
-    ap.add_argument("--jam-sec", type=float, default=20.0, help="持續幾秒算塞車")
+    ap.add_argument("--jam-kmh", type=float, default=float(env("CODRIVER_JAM_KMH", "10")),
+                    help="低於這個時速算走走停停（預設 10，環境變數 CODRIVER_JAM_KMH）")
+    ap.add_argument("--jam-sec", type=float, default=float(env("CODRIVER_JAM_SEC", "20")),
+                    help="持續幾秒算塞車（預設 20，環境變數 CODRIVER_JAM_SEC）")
     a = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((a.listen, a.port))
     sock.settimeout(1.0)
     print(f"橋接啟動：BeamNG OutGauge {a.listen}:{a.port} → 手機 {a.phone}（Ctrl+C 結束）")
+    print(f"塞車判斷：低於 {a.jam_kmh:.0f} km/h 持續 {a.jam_sec:.0f} 秒")
     sources = set()          # 收過資料的來源 IP（雙機模式時確認是 A 台送來的）
 
     fuel = FuelFilter()

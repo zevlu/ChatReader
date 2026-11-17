@@ -5,7 +5,7 @@ CoDriver：本機 LLM（codriver-llm）連續請求測試（只用 Python 標準
 
 送出的請求跟 App 一樣：
   - 提示詞直接從 App 原始碼 DriveBrain.kt 讀 ROUTER_PROMPT（指令判斷器），使用者訊息格式同 DriveBrain.route()
-  - POST {base}/chat/completions，model = "qwen3.8-flash-next"、temperature 0.2、
+  - POST {base}/chat/completions，model = 伺服器 /v1/models 的第一個 id（或 --model）、temperature 0.2、
     chat_template_kwargs.enable_thinking = false（同 LlmClient.kt）
 每句話都有預期的意圖（intent），最後算正確率、延遲。
 
@@ -21,7 +21,6 @@ import re
 import time
 import urllib.request
 
-MODEL = "qwen3.8-flash-next"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DRIVE_BRAIN = os.path.join(HERE, "..", "..", "app", "src", "drive", "java", "com", "example", "chatreader", "DriveBrain.kt")
 
@@ -54,13 +53,13 @@ def load_router_prompt(path):
     return "\n".join(l[indent:] for l in lines).strip("\n")
 
 
-def ask(base, key, system, utterance, timeout):
+def ask(base, key, model, system, utterance, timeout):
     user = ("【現在時間】" + time.strftime("%Y/%m/%d（%a）%H:%M") + "\n"
             "【聯絡人】孟澤、澤、小美\n"
             "【目前行程】前往駁二大魯閣餐廳（跟孟澤約 19:00）\n"
             "【駕駛說】" + utterance)
     body = {
-        "model": MODEL,
+        "model": model,
         "temperature": 0.2,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
         "chat_template_kwargs": {"enable_thinking": False},
@@ -90,6 +89,7 @@ def main():
     ap = argparse.ArgumentParser(description="codriver-llm 連續請求測試（用 App 真正的提示詞）")
     ap.add_argument("--base", default="http://127.0.0.1:8300/v1", help="OpenAI 相容 API 位址")
     ap.add_argument("--key", default="", help="API 金鑰（codriver-llm 沒設金鑰就不用給）")
+    ap.add_argument("--model", default="", help="模型 id（不給就用伺服器 /v1/models 的第一個）")
     ap.add_argument("--duration", type=int, default=0, help="連續送幾秒（0 = 每句送 --rounds 輪）")
     ap.add_argument("--rounds", type=int, default=1, help="--duration 為 0 時，全部句子送幾輪")
     ap.add_argument("--timeout", type=float, default=60.0)
@@ -97,6 +97,11 @@ def main():
     ap.add_argument("--quiet", action="store_true", help="不印每次的回答內容")
     a = ap.parse_args()
 
+    if not a.model:
+        req = urllib.request.Request(a.base.rstrip("/") + "/models", headers={"Authorization": "Bearer " + (a.key or "none")})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            a.model = json.loads(r.read().decode("utf-8"))["data"][0]["id"]
+    print("模型：%s（%s）" % (a.model, a.base))
     system = load_router_prompt(a.prompt_file)
     print("提示詞：DriveBrain.kt ROUTER_PROMPT（%d 字）" % len(system))
 
@@ -110,7 +115,7 @@ def main():
         u, want = CASES[i % len(CASES)]
         i += 1
         try:
-            dt, intent, content, pt, ct = ask(a.base, a.key, system, u, a.timeout)
+            dt, intent, content, pt, ct = ask(a.base, a.key, a.model, system, u, a.timeout)
             lat.append(dt)
             if pt: ptoks.append(pt)
             if ct: ctoks.append(ct)

@@ -21,7 +21,7 @@ fi
 # 1. Steam（BeamNG 要 Steam 在背景執行才能通過驗證；不用按 Play）
 if ! pgrep -f '[s]teamrt64/steam' > /dev/null; then
   say "啟動 Steam..."
-  (cd ~ && setsid nohup snap run steam > "$CODRIVER_HOME/logs/steam.log" 2>&1 < /dev/null &)
+  (cd ~ && setsid -f snap run steam > "$CODRIVER_HOME/logs/steam.log" 2>&1 < /dev/null)
   for i in $(seq 1 90); do pgrep -f '[s]teamwebhelper' > /dev/null && break; sleep 2; done
   sleep 10
   say "Steam 已啟動"
@@ -30,7 +30,7 @@ fi
 # 2. BeamNG.Earth 世界伺服器（ARM 原生）
 if ! ss -ltn | grep -q ':47613 '; then
   say "啟動 BeamNG.Earth 世界伺服器..."
-  rm -f "$SLOG"; (setsid nohup "$HERE/run_earth_server.sh" > /dev/null 2>&1 < /dev/null &)
+  rm -f "$SLOG"; setsid -f "$HERE/run_earth_server.sh" > /dev/null 2>&1 < /dev/null
   waitlog "$SLOG" "World server +running|did not start" 90
   grep -q -E "World server +running" "$SLOG" || { say "世界伺服器啟動失敗，請看 $SLOG"; exit 1; }
 fi
@@ -39,7 +39,7 @@ say "世界伺服器 OK"
 # 3. BeamNG（-noui：CEF 介面在 FEX 下會當掉）
 say "啟動 BeamNG..."
 rm -f $U/codriver_cmd.lua
-(setsid nohup "$HERE/run_beamng.sh" -noui -nocrashreport > "$GLOG" 2>&1 < /dev/null &)
+setsid -f "$HERE/run_beamng.sh" -noui -nocrashreport > "$GLOG" 2>&1 < /dev/null
 waitlog "$GLOG" "CODRIVER_FPS" 90 || { say "遊戲沒有正常啟動（codriver mod 有裝嗎？），請看 $GLOG"; exit 1; }
 
 # 4. 3D 畫面（-noui 不會建）、1080p 無邊框全螢幕、垂直同步，載入 BeamNG.Earth 關卡

@@ -116,7 +116,8 @@ python3 tools/dgx/llm_bench.py --count 5 # 測試回答與延遲
 ```
 
 - `codriver-llm` 使用 `nvcr.io/nvidia/vllm:26.10-py3`（arm64）和 `~/codriver-models/<模型>`。
-- App 的 `LlmClient.kt` 寫死 `model = "qwen3.8-flash-next"`，並用 `chat_template_kwargs.enable_thinking=false` 關閉思考。vLLM 用 `--served-model-name` 沿用這個名字，**App 不用改**。
+- 對外的模型 id 預設是模型資料夾名稱（例如 `Qwen3-8B`），App 設定頁的「模型名稱」填這個。
+- App 用 `chat_template_kwargs.enable_thinking=false` 關閉 Qwen3 的思考，vLLM 原生支援。
 - 原本的 iAI Hub 模型 `Qwen/Qwen3.8-Flash-Next` 有 1800 億參數、360 GB，DGX 放不下，所以改用本機模型。
 - 下載模型：`tools/dgx/fetch_hf_model.sh Qwen/Qwen3-8B ~/codriver-models/Qwen3-8B`。
   - 這支腳本用 curl 逐檔續傳，斷線或 DNS 失敗會自動重試，不會從頭來。
@@ -144,7 +145,7 @@ App 的 `local.properties`：`IAI_BASE=http://127.0.0.1:8300/v1`。`IAI_KEY` 要
 ```bash
 python3 tools/dgx/power_mem_monitor.py --label game10 --duration 600 \
   --group 'beamng=BinLinux/BeamNG\.drive\.x64' \
-  --group 'codriver_llm=qwen3\.8-flash-next|VLLM::'
+  --group 'codriver_llm=vllm serve|VLLM::EngineCore'
 python3 tools/dgx/llm_bench.py --duration 300 --quiet   # llm 情境時同時跑
 ```
 
