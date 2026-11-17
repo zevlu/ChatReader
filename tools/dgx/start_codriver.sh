@@ -42,19 +42,33 @@ rm -f $U/codriver_cmd.lua
 setsid -f "$HERE/run_beamng.sh" -noui -nocrashreport > "$GLOG" 2>&1 < /dev/null
 waitlog "$GLOG" "CODRIVER_FPS" 90 || { say "遊戲沒有正常啟動（codriver mod 有裝嗎？），請看 $GLOG"; exit 1; }
 
-# 4. 3D 畫面（-noui 不會建）、1080p 無邊框全螢幕、垂直同步，載入 BeamNG.Earth 關卡
-send 'local g=scenetree.findObject("OnlyGui") if not g then g=createObject("GameViewportCtrl") g.forceFOV=0 g:setField("position",0,"0 0") g:setField("extent",0,"1024 768") g:setField("horizSizing",0,"width") g:setField("vertSizing",0,"height") g:setField("profile",0,"GuiDefaultProfile") g.visible=1 g.active=1 g.isContainer=1 g.enabled=1 g:registerObject("OnlyGui") end scenetree.findObject("Canvas"):setContent(g) settings.setValue("vsync", true) settings.setValue("fpsLimitEnabled", false) settings.setValue("GraphicDisplayResolutions", "1920 1080") settings.setValue("GraphicDisplayModes", "Borderless") core_settings_graphic.applyGraphicsState() freeroam_freeroam.startFreeroamByName("beamng_earth") return "boot"'
+# 4. 3D 畫面（-noui 不會建）、畫面模式（codriver-dgx.conf 的 GAME_MODE／GAME_RES）、垂直同步，載入 BeamNG.Earth 關卡
+send 'local g=scenetree.findObject("OnlyGui") if not g then g=createObject("GameViewportCtrl") g.forceFOV=0 g:setField("position",0,"0 0") g:setField("extent",0,"1024 768") g:setField("horizSizing",0,"width") g:setField("vertSizing",0,"height") g:setField("profile",0,"GuiDefaultProfile") g.visible=1 g.active=1 g.isContainer=1 g.enabled=1 g:registerObject("OnlyGui") end scenetree.findObject("Canvas"):setContent(g) settings.setValue("vsync", true) settings.setValue("fpsLimitEnabled", false) settings.setValue("GraphicDisplayResolutions", "'"$GAME_RES"'") settings.setValue("GraphicDisplayModes", "'"$GAME_MODE"'") core_settings_graphic.applyGraphicsState() freeroam_freeroam.startFreeroamByName("beamng_earth") return "boot"'
 say "載入 BeamNG.Earth 關卡（約 30 秒）..."
 waitlog "$GLOG" "earthReady=true" 300 || { say "Earth 世界沒有就緒，請看 $GLOG"; exit 1; }
 
-# 5. 傳送到起點
+# 5. 傳送到起點，等那裡的地圖載好
 say "傳送到 $PLACE ..."
 if [[ "$PLACE" =~ ^-?[0-9.]+\ +-?[0-9.]+$ ]]; then "$HERE/bng" tp $PLACE; else "$HERE/bng" place "$PLACE"; fi
-sleep 15
+sleep 5
+for i in $(seq 1 30); do "$HERE/bng" lua "return tostring(beamngEarth_api.ready())" 2>/dev/null | grep -q true && break; sleep 2; done
 
-# 6. OutGauge（codriver-dgx.conf 的 OUTGAUGE_HOST／PORT）
+# 6. 遊戲 GPS 先導航到預設目的地，等路線規劃好，車頭轉向路線（傳送後方向是隨機的）
+if [ -n "$START_GPS" ]; then
+  say "遊戲 GPS → $START_GPS ..."; "$HERE/bng" gps "$START_GPS"
+  # 要等路線規劃好（規劃中時只是一條指向目的地的直線，方向會錯）
+  for i in $(seq 1 30); do "$HERE/bng" gps 2>/dev/null | grep -q "規劃中\|沒有 GPS" || break; sleep 2; done
+  for i in $(seq 1 10); do "$HERE/bng" face 2>/dev/null | grep -q "車頭轉向" && { say "車頭已轉向導航路線"; break; }; sleep 2; done
+fi
+
+# 展示畫面乾淨：關掉 Earth 的除錯面板（要用時 bng panel）
+"$HERE/bng" panel off > /dev/null
+
+# 7. OutGauge（codriver-dgx.conf 的 OUTGAUGE_HOST／PORT）
 say "OutGauge 設定..."; "$HERE/bng" outgauge
 
-# 7. 交通車（選用）
-if [ "$TRAFFIC" -gt 0 ] 2>/dev/null; then say "叫出 $TRAFFIC 台交通車..."; "$HERE/bng" traffic "$TRAFFIC"; fi
-say "完成！用 Alt+Tab 切到 BeamNG 視窗開車。其他操作：$HERE/bng（遊戲 log：$GLOG）"
+# 8. 交通車：剛生成的 30～60 秒會掉格，所以在出發前就叫好、等它穩定
+if [ "$TRAFFIC" -gt 0 ] 2>/dev/null; then
+  say "叫出 $TRAFFIC 台交通車（約 60 秒）..."; "$HERE/bng" traffic "$TRAFFIC"; sleep 60
+fi
+say "完成！用 Alt+Tab 切到 BeamNG 視窗開車。塞車：$HERE/bng jam on；其他操作：$HERE/bng（遊戲 log：$GLOG）"

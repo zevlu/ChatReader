@@ -34,7 +34,7 @@
 | # | 測試 | 怎麼測 | 狀態 |
 |---|---|---|---|
 | 1 | **Steam 離線模式能不能啟動遊戲** | Steam → Steam 選單 → Go Offline，重開 Steam，再執行 `start_codriver.sh` | ⏳ |
-| 2 | **Earth 沒有網路時能不能用快取載入高雄** | 拔網路線，或執行 `run_earth_server.sh -- --offline`（Earth 內建「只用硬碟快取」的參數），傳送到高雄，看地形和建築是否完整 | ⏳ |
+| 2 | **Earth 沒有網路時能不能用快取載入高雄** | 拔網路線，或執行 `run_earth_server.sh --offline`（Earth 內建「只用硬碟快取」的參數），傳送到高雄，看地形和建築是否完整 | ⏳ |
 | 3 | 展示路線整條都有快取 | 有網路時沿著展示路線開一遍，讓 Earth 把沿途資料抓進快取 | ⏳ |
 | 4 | 雙機 OutGauge＋位置（A → B） | A 台設 `OUTGAUGE_HOST=<B IP>`，B 台 `.env` 設 `CODRIVER_OUTGAUGE_LISTEN=0.0.0.0`。防火牆：B 台開 UDP 4444（OutGauge）、4445（位置／GPS）給 A；A 台開 UDP 4446（GPS 指令）給 B | 單台模擬已通過；兩台⏳ |
 | 5 | 手機接 B 台：`adb forward 8765`＋`adb reverse 8300`，App 連本機 LLM | 跑完整故事 | ⏳ |
