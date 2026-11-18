@@ -20,6 +20,8 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
@@ -80,6 +82,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var micHint: TextView
     private lateinit var textInput: EditText
     private lateinit var settingsPanel: View
+    private lateinit var rootView: View
     private lateinit var friendField: EditText
     private lateinit var phoneUrlField: EditText
     private lateinit var phoneModelField: EditText
@@ -106,7 +109,17 @@ class MainActivity : AppCompatActivity() {
         supportActionBar?.hide()
         CarMate.init(this)
 
-        val root = FrameLayout(this).apply { setBackgroundColor(BG) }
+        // 2026-11-19：從 Messenger 回來時不要自動彈出鍵盤（開車中用不到；手動點打字框才出現）
+        window.setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN or WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        )
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(BG)
+            // 根容器先拿焦點，打字框就不會在回到前景時被自動選到
+            isFocusable = true
+            isFocusableInTouchMode = true
+        }
+        rootView = root
         root.addView(buildDashboard())
         settingsPanel = buildSettings().apply { visibility = View.GONE }
         root.addView(settingsPanel)
@@ -115,11 +128,26 @@ class MainActivity : AppCompatActivity() {
         askPermissions()
     }
 
+    /** 收起鍵盤、讓打字框失去焦點 */
+    private fun hideKeyboard() {
+        if (::textInput.isInitialized) textInput.clearFocus()
+        if (::rootView.isInitialized) rootView.requestFocus()
+        (getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager)
+            ?.hideSoftInputFromWindow(window.decorView.windowToken, 0)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // 從別的 App（Messenger）切回來、視窗重新拿到焦點時，也收一次鍵盤
+        if (hasFocus && settingsPanel.visibility != View.VISIBLE) hideKeyboard()
+    }
+
     override fun onResume() {
         super.onResume()
         CarMate.onUpdate = { runOnUiThread { render() } }
         ui.post(tick)
         hideSystemBars()
+        if (settingsPanel.visibility != View.VISIBLE) hideKeyboard()
         render()
     }
 
@@ -170,7 +198,7 @@ class MainActivity : AppCompatActivity() {
         }
         addView(clockView)
         chipAcc = chip(); chipAi = chip(); chipRouter = chip(); chipPhone = chip()
-        chipAi.setOnClickListener { AiSource.toggle(this@MainActivity); render() }   // 點一下切換 iAI ↔ DGX
+        chipAi.setOnClickListener { AiSource.toggle(this@MainActivity); AiSource.syncModelAsync(this@MainActivity) { render() }; render() }   // 點一下切換 iAI ↔ DGX
         chipHands = chip().apply {
             setOnClickListener { CarMate.setHandsFree(!CarMate.handsFreeWanted); render() }
         }
@@ -260,7 +288,7 @@ class MainActivity : AppCompatActivity() {
         }
         addView(row(textInput, gapH(), smallBtn("送出", ACCENT, BG) {
             val t = textInput.text.toString().trim()
-            if (t.isNotEmpty()) { textInput.setText(""); syncContacts(); CarMate.onHeard(t) }
+            if (t.isNotEmpty()) { textInput.setText(""); syncContacts(); hideKeyboard(); CarMate.onHeard(t) }
         }).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(10) })
     }
 
@@ -295,6 +323,7 @@ class MainActivity : AppCompatActivity() {
             dgxModelField = field(AiSource.DEFAULT_DGX_MODEL, AiSource.dgxModel)
             aiBtn = smallBtn("") {
                 AiSource.save(this@MainActivity, !AiSource.useDgx, dgxUrlField.text.toString(), dgxModelField.text.toString())
+                AiSource.syncModelAsync(this@MainActivity) { render() }   // 切到 DGX 時，自動抓 DGX 上實際的模型名稱
                 render()
             }
             testResult = text("", 13f, MUTED).apply { setPadding(0, dp(6), 0, dp(6)) }
@@ -415,6 +444,9 @@ class MainActivity : AppCompatActivity() {
         }
         micHint.text = if (HandsFree.enabled) "點一下說話・或直接說「副駕」" else "點一下說話"
 
+        // DGX 的模型名稱是自動抓的：欄位沒在編輯時，顯示目前的值
+        if (::dgxModelField.isInitialized && !dgxModelField.hasFocus() && dgxModelField.text.toString() != AiSource.dgxModel)
+            dgxModelField.setText(AiSource.dgxModel)
         if (::aiBtn.isInitialized) aiBtn.text = if (AiSource.useDgx)
             "🖥 AI 來源：DGX（${AiSource.dgxBase}）— 點一下切回 iAI Hub"
         else "☁ AI 來源：iAI Hub（學校雲端）— 點一下切到 DGX"

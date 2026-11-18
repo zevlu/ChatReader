@@ -121,6 +121,14 @@ object DashServer {
                         .getOrElse { "找不到 assets/dash.html".toByteArray(Charsets.UTF_8) }
                     respond(out, 200, "text/html; charset=utf-8", html); sock.close()
                 }
+                // 2026-11-18：網頁用的函式庫（three.js、Leaflet）打包在 assets/lib，會場沒網路也能開車機網頁
+                method == "GET" && LIB_PATH.matches(path) -> {
+                    val name = path.removePrefix("/lib/")
+                    val bytes = runCatching { app.assets.open("lib/$name").readBytes() }.getOrNull()
+                    if (bytes == null) respond(out, 404, "text/plain", "not found".toByteArray())
+                    else respond(out, 200, libType(name), bytes)
+                    sock.close()
+                }
                 method == "GET" && path == "/state" -> {
                     respond(out, 200, "application/json; charset=utf-8", lastState.toByteArray(Charsets.UTF_8)); sock.close()
                 }
@@ -167,6 +175,16 @@ object DashServer {
                     .onFailure { clients.remove(out) }
             }
         }.start()
+    }
+
+    /** 只接受 /lib/檔名（英數字、點、底線、減號），不能往上層資料夾讀 */
+    private val LIB_PATH = Regex("""^/lib/[A-Za-z0-9._-]+$""")
+
+    private fun libType(name: String) = when (name.substringAfterLast('.').lowercase()) {
+        "js" -> "application/javascript; charset=utf-8"
+        "css" -> "text/css; charset=utf-8"
+        "png" -> "image/png"
+        else -> "application/octet-stream"
     }
 
     private fun respond(out: OutputStream, code: Int, type: String, body: ByteArray) {
