@@ -64,6 +64,8 @@ fi
 # 展示畫面乾淨：關掉 Earth 的除錯面板（要用時 bng panel）；固定白天（Earth 預設跟真實時間，晚上全黑）
 "$HERE/bng" panel off > /dev/null
 "$HERE/bng" day "${GAME_HOUR:-13}" > /dev/null
+# 操作員快速鍵（Ctrl+Alt+1～4）用的起點／目的地
+"$HERE/bng" hotkeys > /dev/null
 
 # 7. OutGauge（codriver-dgx.conf 的 OUTGAUGE_HOST／PORT）
 say "OutGauge 設定..."; "$HERE/bng" outgauge
@@ -72,4 +74,4 @@ say "OutGauge 設定..."; "$HERE/bng" outgauge
 if [ "$TRAFFIC" -gt 0 ] 2>/dev/null; then
   say "叫出 $TRAFFIC 台交通車（約 60 秒）..."; "$HERE/bng" traffic "$TRAFFIC"; sleep 60
 fi
-say "完成！用 Alt+Tab 切到 BeamNG 視窗開車。塞車：$HERE/bng jam on；其他操作：$HERE/bng（遊戲 log：$GLOG）"
+say "完成！用 Alt+Tab 切到 BeamNG 視窗開車。快速鍵：Ctrl+Alt+1 塞車開關、2 回起點、3 車放回路上、4 交通車重生；其他操作：$HERE/bng（遊戲 log：$GLOG）"

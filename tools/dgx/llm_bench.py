@@ -13,11 +13,14 @@ CoDriver：本機 LLM（codriver-llm）連續請求測試（只用 Python 標準
   python3 tools/dgx/llm_bench.py                         # 每句送一次，印出回答與對錯
   python3 tools/dgx/llm_bench.py --duration 300 --quiet  # 量 llm 情境時，同時開 power_mem_monitor.py
   python3 tools/dgx/llm_bench.py --base http://127.0.0.1:8300/v1 --key 你的金鑰
+  python3 tools/dgx/llm_bench.py --duration 1200 --interval 10 --quiet    # 模擬展示頻率：每 10 秒一句
+  python3 tools/dgx/llm_bench.py --duration 600 --concurrency 4 --quiet   # 壓力測試：4 個人同時連續發
 """
 import argparse
 import json
 import os
 import re
+import threading
 import time
 import urllib.request
 
@@ -92,6 +95,8 @@ def main():
     ap.add_argument("--model", default="", help="模型 id（不給就用伺服器 /v1/models 的第一個）")
     ap.add_argument("--duration", type=int, default=0, help="連續送幾秒（0 = 每句送 --rounds 輪）")
     ap.add_argument("--rounds", type=int, default=1, help="--duration 為 0 時，全部句子送幾輪")
+    ap.add_argument("--interval", type=float, default=0, help="每句之間至少隔幾秒（模擬展示頻率；0 = 一句接一句）")
+    ap.add_argument("--concurrency", type=int, default=1, help="同時幾個連線（壓力測試用）")
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--prompt-file", default=DRIVE_BRAIN, help="讀 ROUTER_PROMPT 的 Kotlin 檔")
     ap.add_argument("--quiet", action="store_true", help="不印每次的回答內容")
@@ -105,43 +110,60 @@ def main():
     system = load_router_prompt(a.prompt_file)
     print("提示詞：DriveBrain.kt ROUTER_PROMPT（%d 字）" % len(system))
 
-    lat, right, wrong, bad, errors, ptoks, ctoks = [], 0, 0, 0, 0, [], []
-    t0, i = time.time(), 0
-    while True:
-        if a.duration and time.time() - t0 >= a.duration:
-            break
-        if not a.duration and i >= a.rounds * len(CASES):
-            break
-        u, want = CASES[i % len(CASES)]
-        i += 1
-        try:
-            dt, intent, content, pt, ct = ask(a.base, a.key, a.model, system, u, a.timeout)
-            lat.append(dt)
-            if pt: ptoks.append(pt)
-            if ct: ctoks.append(ct)
-            if intent is None:
-                bad += 1; mark = "⚠ 不是合法 JSON"
-            elif intent in want:
-                right += 1; mark = "✅ " + intent
-            else:
-                wrong += 1; mark = "❌ %s（應為 %s）" % (intent, "／".join(sorted(want)))
-            print(f"[{time.strftime('%H:%M:%S')}] {dt:5.2f} 秒 {mark}  {u}" +
-                  ("" if a.quiet else f"\n    → {content[:160]}"), flush=True)
-        except Exception as e:
-            errors += 1
-            print(f"[{time.strftime('%H:%M:%S')}] ❌ 請求失敗 {u}：{e}", flush=True)
-            time.sleep(2)
+    st = {"lat": [], "right": 0, "wrong": 0, "bad": 0, "errors": 0, "ptoks": [], "ctoks": [], "i": 0}
+    lock = threading.Lock()
+    t0 = time.time()
 
+    def worker():
+        while True:
+            with lock:
+                if a.duration and time.time() - t0 >= a.duration:
+                    return
+                if not a.duration and st["i"] >= a.rounds * len(CASES):
+                    return
+                u, want = CASES[st["i"] % len(CASES)]
+                st["i"] += 1
+            ts = time.time()
+            try:
+                dt, intent, content, pt, ct = ask(a.base, a.key, a.model, system, u, a.timeout)
+                with lock:
+                    st["lat"].append(dt)
+                    if pt: st["ptoks"].append(pt)
+                    if ct: st["ctoks"].append(ct)
+                    if intent is None:
+                        st["bad"] += 1; mark = "⚠ 不是合法 JSON"
+                    elif intent in want:
+                        st["right"] += 1; mark = "✅ " + intent
+                    else:
+                        st["wrong"] += 1; mark = "❌ %s（應為 %s）" % (intent, "／".join(sorted(want)))
+                print(f"[{time.strftime('%H:%M:%S')}] {dt:5.2f} 秒 {mark}  {u}" +
+                      ("" if a.quiet else f"\n    → {content[:160]}"), flush=True)
+            except Exception as e:
+                with lock:
+                    st["errors"] += 1
+                print(f"[{time.strftime('%H:%M:%S')}] ❌ 請求失敗 {u}：{e}", flush=True)
+                time.sleep(2)
+            if a.interval > 0:                       # 模擬展示頻率：每 --interval 秒才發一句
+                time.sleep(max(0.0, a.interval - (time.time() - ts)))
+
+    if a.concurrency > 1:
+        print("同時 %d 個連線" % a.concurrency)
+    ths = [threading.Thread(target=worker, daemon=True) for _ in range(max(1, a.concurrency))]
+    for t in ths: t.start()
+    for t in ths: t.join()
+    lat, right, wrong, bad, errors, ptoks, ctoks = (st["lat"], st["right"], st["wrong"], st["bad"],
+                                                     st["errors"], st["ptoks"], st["ctoks"])
     if lat:
         s = sorted(lat)
         p95 = s[min(len(s) - 1, int(len(s) * 0.95))]
         n = right + wrong + bad
-        print(f"\n共 {len(lat)} 次成功、{errors} 次失敗")
+        wall = time.time() - t0
+        print(f"\n共 {len(lat)} 次成功、{errors} 次失敗（{wall:.0f} 秒，每分鐘 {60.0 * len(lat) / wall:.1f} 句）")
         print(f"意圖正確 {right}/{n}（{100.0 * right / n:.0f}%）、判錯 {wrong}、不是合法 JSON {bad}")
         print(f"延遲：平均 {sum(s) / len(s):.2f} 秒、最快 {s[0]:.2f}、P95 {p95:.2f}、最慢 {s[-1]:.2f}")
         if ptoks and ctoks:
             print(f"平均輸入 {sum(ptoks) / len(ptoks):.0f} tokens、輸出 {sum(ctoks) / len(ctoks):.0f} tokens"
-                  f"，輸出速度約 {sum(ctoks) / sum(lat):.1f} tokens/秒（含預填）")
+                  f"，輸出速度約 {sum(ctoks) / sum(lat):.1f} tokens/秒（含預填，單一連線）")
 
 
 if __name__ == "__main__":

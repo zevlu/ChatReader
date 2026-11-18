@@ -1,0 +1,8 @@
+{
+  "bindings":[
+    {"control":"ctrl alt 1", "action":"codriver_jam_toggle"},
+    {"control":"ctrl alt 2", "action":"codriver_back_to_start"},
+    {"control":"ctrl alt 3", "action":"codriver_to_road"},
+    {"control":"ctrl alt 4", "action":"codriver_traffic_respawn"}
+  ]
+}

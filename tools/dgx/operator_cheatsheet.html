@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<title>CoDriver 操作員小抄</title>
+<!-- 由 OPERATOR_CHEATSHEET.md 產生（python3 markdown＋tables）；改內容請改 .md 再重新產生 -->
+<style>
+@page { size: A4; margin: 10mm 11mm; }
+body { font-family: "Noto Sans CJK TC", "Microsoft JhengHei", sans-serif; font-size: 9.6pt; line-height: 1.32; color: #111; background: #fff; margin: 0 auto; max-width: 190mm; }
+h1 { font-size: 15pt; margin: 0 0 3mm; border-bottom: 2px solid #111; padding-bottom: 1.5mm; }
+h2 { font-size: 11.5pt; margin: 3.5mm 0 1.5mm; background: #111; color: #fff; padding: 0.8mm 2mm; }
+p, blockquote { margin: 1mm 0; }
+blockquote { border-left: 3px solid #999; padding-left: 2mm; color: #333; }
+table { border-collapse: collapse; width: 100%; margin: 1mm 0; }
+th, td { border: 1px solid #888; padding: 0.9mm 1.6mm; vertical-align: top; text-align: left; }
+th { background: #e6e6e6; }
+code { font-family: "Noto Sans Mono CJK TC", Consolas, monospace; font-size: 8.8pt; background: #f1f1f1; padding: 0 0.6mm; }
+strong { font-weight: 700; }
+ul { margin: 1mm 0; padding-left: 5mm; }
+table:first-of-type td:nth-child(-n+2), th { white-space: nowrap; }
+table:nth-of-type(-n+3) td:first-child { white-space: nowrap; }
+/* 正面：開場、快速鍵、常用指令；反面：出錯怎麼辦、不要做（雙面列印一張 A4） */
+h2:nth-of-type(4) { break-before: page; }
+@media screen { body { padding: 10mm; } h2:nth-of-type(4) { margin-top: 12mm; } }
+</style></head><body>
+<h1>CoDriver 展示操作員小抄（A 台遊戲／B 台車機）</h1>
+<blockquote>
+<p>指令都在 repo 根目錄 <code>~/ChatReader</code> 執行；<code>bng</code> = <code>tools/dgx/bng</code>。</p>
+</blockquote>
+<h2>開場（約 7 分鐘）</h2>
+<table>
+<thead>
+<tr>
+<th>順序</th>
+<th>在哪</th>
+<th>做什麼</th>
+<th>看到什麼才算好</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>B 台</td>
+<td><code>docker compose up -d</code></td>
+<td><code>docker compose logs -f codriver-llm</code> 出現 <code>Application startup complete.</code>（約 5 分鐘）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>B 台</td>
+<td><code>python3 tools/dgx/llm_bench.py --rounds 1</code></td>
+<td><code>意圖正確 12/12</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td>B 台</td>
+<td>手機 USB 接上 → <code>adb forward tcp:8765 tcp:8765</code>、<code>adb reverse tcp:8300 tcp:8300</code> → 開 CoDriver</td>
+<td><code>docker compose logs --tail 3 codriver-bridge</code> 不再出現「✗ 手機沒連上」</td>
+</tr>
+<tr>
+<td>4</td>
+<td>A 台</td>
+<td><code>tools/dgx/start_codriver.sh</code></td>
+<td>最後一行「完成！」（約 2 分鐘）</td>
+</tr>
+<tr>
+<td>5</td>
+<td>A 台</td>
+<td><code>bng status</code></td>
+<td><code>OutGauge 開 &lt;B 台 IP&gt;:4444</code>、FPS 約 60</td>
+</tr>
+<tr>
+<td>6</td>
+<td>B 台</td>
+<td>Chromium 開 <code>http://localhost:8765/?unit=1</code></td>
+<td>地圖上有車子的位置</td>
+</tr>
+</tbody>
+</table>
+<h2>遊戲內快速鍵（BeamNG 視窗在前景時）</h2>
+<table>
+<thead>
+<tr>
+<th>按鍵</th>
+<th>功能</th>
+<th>什麼時候用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Ctrl+Alt+1</strong></td>
+<td>塞車 開／關</td>
+<td>開到東寧路右轉旗楠路前按「開」；CoDriver 問完、駕駛說「送出」後再按一次解除</td>
+</tr>
+<tr>
+<td><strong>Ctrl+Alt+2</strong></td>
+<td>回起點（清豐二路，GPS 重設到楠梓車站麥當勞，車頭對準路線）</td>
+<td>每一輪展示開始前；約 20 秒</td>
+</tr>
+<tr>
+<td><strong>Ctrl+Alt+3</strong></td>
+<td>把車放回路上</td>
+<td>撞牆、卡住、翻車</td>
+</tr>
+<tr>
+<td><strong>Ctrl+Alt+4</strong></td>
+<td>交通車重生</td>
+<td>交通車跑光了、或都擠在一起</td>
+</tr>
+</tbody>
+</table>
+<p>按下後畫面上方會出現一行提示。遊戲原本的鍵：<strong>R</strong> 原地重置、<strong>J</strong> 暫停。</p>
+<h2>常用指令（A 台終端機）</h2>
+<table>
+<thead>
+<tr>
+<th>指令</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bng start</code></td>
+<td>回起點（和 Ctrl+Alt+2 一樣，會印出結果）</td>
+</tr>
+<tr>
+<td><code>bng jam on</code> ／ <code>bng jam off</code></td>
+<td>塞車開／關</td>
+</tr>
+<tr>
+<td><code>bng gps 楠梓車站麥當勞</code> ／ <code>bng gps off</code></td>
+<td>遊戲 GPS 導航／取消</td>
+</tr>
+<tr>
+<td><code>bng road</code> ／ <code>bng reset</code></td>
+<td>車放回路上／原地重置</td>
+</tr>
+<tr>
+<td><code>bng traffic 10</code> ／ <code>bng traffic off</code></td>
+<td>叫 10 台交通車／全部移除（10 台以上 FPS 會掉）</td>
+</tr>
+<tr>
+<td><code>bng day</code></td>
+<td>天色變暗時固定回白天</td>
+</tr>
+<tr>
+<td><code>bng status</code></td>
+<td>位置、FPS、OutGauge 目標</td>
+</tr>
+<tr>
+<td><code>tools/dgx/stop_codriver.sh</code> → <code>tools/dgx/start_codriver.sh</code></td>
+<td>遊戲整個重開（約 2 分鐘）</td>
+</tr>
+</tbody>
+</table>
+<h2>出錯怎麼辦</h2>
+<table>
+<thead>
+<tr>
+<th>狀況</th>
+<th>先做</th>
+<th>還是不行</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>車卡住、翻車、開進奇怪的地方</td>
+<td>Ctrl+Alt+3</td>
+<td>Ctrl+Alt+2 回起點</td>
+</tr>
+<tr>
+<td>路面沒有導航箭頭</td>
+<td><code>bng gps 楠梓車站麥當勞</code>，等 10 秒</td>
+<td>網路斷了：箭頭會變成直線指向目的地（地圖還是能用）。手機熱點接 DGX 的 Wi-Fi</td>
+</tr>
+<tr>
+<td>塞車了 CoDriver 卻沒開口</td>
+<td>確認車速低於 10 km/h 已超過 20 秒，前方至少 1 台車</td>
+<td>B 台 <code>docker compose logs --tail 20 codriver-bridge</code> 要看到「【塞車】… → 通知副駕」；出現「✗ 手機沒連上」就是手機的問題</td>
+</tr>
+<tr>
+<td>車機網頁的地圖不動</td>
+<td><code>bng status</code> 看 OutGauge 是否指向 B 台</td>
+<td><code>bng outgauge</code>；B 台 <code>docker compose restart codriver-bridge</code></td>
+</tr>
+<tr>
+<td>AI 不回答、App 顯示 404</td>
+<td>App 設定的模型名稱必須是 <code>Qwen3.6-35B-A3B-FP8</code></td>
+<td>B 台 <code>python3 tools/dgx/llm_bench.py --rounds 1</code>；有錯就 <code>docker compose restart codriver-llm</code>（5 分鐘）</td>
+</tr>
+<tr>
+<td>手機斷線</td>
+<td>重新插 USB，再執行一次 <code>adb forward …</code>、<code>adb reverse …</code></td>
+<td>重開 CoDriver App</td>
+</tr>
+<tr>
+<td>遊戲畫面當住或關掉</td>
+<td><code>tools/dgx/stop_codriver.sh</code> → <code>tools/dgx/start_codriver.sh</code></td>
+<td>看 <code>~/codriver-dgx/logs/game_*.log</code> 最後幾行</td>
+</tr>
+<tr>
+<td>畫面變暗</td>
+<td><code>bng day</code></td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h2>不要做</h2>
+<ul>
+<li>不要按 BeamNG.Earth 的「Update now」（版本凍結在 1.9.1-beta）。</li>
+<li>不要在 Steam 按 STOP；關遊戲用 <code>stop_codriver.sh</code>。</li>
+<li>Steam 同一個帳號同時只能在一台跑遊戲：要換 C 台備援，先關 A 台的遊戲。</li>
+<li>不要停或刪除別組（ai-truth-lab）的容器。</li>
+</ul>
+</body></html>

@@ -1,4 +1,4 @@
--- CoDriver：遊戲啟動時自動載入遠端指令、FPS 記錄、位置／GPS 回報擴充
+-- CoDriver：遊戲啟動時自動載入遠端指令、FPS 記錄、位置／GPS 回報、塞車、抵達標記、操作員快速鍵
 setExtensionUnloadMode("codriverRemote", "manual")
 extensions.load("codriverRemote")
 setExtensionUnloadMode("codriverFps", "manual")
@@ -9,3 +9,5 @@ setExtensionUnloadMode("codriverJam", "manual")
 extensions.load("codriverJam")
 setExtensionUnloadMode("codriverDest", "manual")
 extensions.load("codriverDest")
+setExtensionUnloadMode("codriverHotkeys", "manual")
+extensions.load("codriverHotkeys")

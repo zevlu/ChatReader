@@ -92,6 +92,17 @@ tools/dgx/bng                                # 列出所有操作指令
 
 遊戲裡的按鍵：**J** 暫停、**R** 重置、**C** 換鏡頭、**Shift+C** 自由鏡頭。
 
+**CoDriver 快速鍵**（codriver mod 的 `codriverHotkeys`，展示時不用切到終端機；按下後畫面上方會出現提示）：
+
+| 按鍵 | 作用 |
+|---|---|
+| **Ctrl+Alt+1** | 塞車開／關（開：導航路線前方約 450 公尺，離終點太近時自動縮短） |
+| **Ctrl+Alt+2** | 回起點：停自動駕駛、清標記與塞車 → 傳送到 `START_PLACE` → GPS 設到 `START_GPS` → 車頭對準路線（約 20 秒） |
+| **Ctrl+Alt+3** | 把車放回最近的道路 |
+| **Ctrl+Alt+4** | 交通車重新分散到附近；沒有交通車時叫出 `START_TRAFFIC` 台 |
+
+起點、目的地由 `start_codriver.sh` 執行 `bng hotkeys` 從 `codriver-dgx.conf` 帶進遊戲。按鍵定義在 mod 的 `lua/ge/extensions/core/input/actions/codriver.json`，預設綁定在 `settings/inputmaps/keyboard_codriver.json`（BeamNG 原本沒用到 Ctrl+Alt+數字）。操作員小抄：[OPERATOR_CHEATSHEET.md](OPERATOR_CHEATSHEET.md)。
+
 ### 為什麼沒有遊戲選單
 
 BeamNG 內建的 CEF（Chromium 150）在 FEX 轉譯下 renderer 會 segfault。這是新版 CEF 的 FD 處理跟 FEX 不合，加 `-nosandbox` 或 FEX `Multiblock=0` 都沒用。
@@ -163,6 +174,14 @@ python3 tools/dgx/power_mem_monitor.py --label game10 --duration 600 \
   --group 'beamng=BinLinux/BeamNG\.drive\.x64' \
   --group 'codriver_llm=vllm serve|VLLM::EngineCore'
 python3 tools/dgx/llm_bench.py --duration 300 --quiet   # llm 情境時同時跑
+python3 tools/dgx/llm_bench.py --duration 1200 --interval 10 --quiet    # 展示頻率：每 10 秒一句
+python3 tools/dgx/llm_bench.py --duration 600 --concurrency 4 --quiet   # 壓力測試：4 個連線同時連續發
+```
+
+依展示分工一次量完（無人值守約 90 分鐘：單機全開 30 → A 台角色 15 → idle 3 → B 台角色 30，最後重新開遊戲）：
+
+```bash
+tools/dgx/measure_roles.sh            # 結果：logs/power_mem/*_summary.txt、~/codriver-dgx/logs/roles_<時間>/
 ```
 
 - 一定要加 `beamng=...` 這組：Earth 伺服器的指令列也含「BeamNG」（`BeamNG.Earth/launcher.py`），不加會被算進 beamng。
@@ -198,6 +217,20 @@ full（11/17，手機中途斷線）期間的狀況：
 codriver-llm（Qwen3-8B，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸入約 1070 tokens，輸出約 33 tokens）：
 - **只跑 LLM（B 台的情況）**：122 次請求，意圖 100% 正確，延遲平均 2.47 秒、P95 3.1 秒
 - 跟遊戲同一台（單機）：延遲平均 4.3 秒，所以展示時遊戲和 LLM 要分開在 A、B 兩台
+
+### 依展示分工（11/18 10:00～11:34，`measure_roles.sh`，LLM＝Qwen3.6-35B-A3B-FP8）
+
+| 角色 | 內容 | GPU 平均／最大 | GPU 最高溫 | CPU 平均／最大 | 整台記憶體最大（減 idle 5.5 GB） | FPS 平均（P5、最低） |
+|---|---|---|---|---|---|---|
+| idle | 遊戲、Earth、Steam、LLM 全關（別組容器照常） | 11.0／11.5 W | 44°C | 1.4／4.2% | 5.5 GB | — |
+| roleA（A 台） | 遊戲＋10 台交通車，自動跑 4 輪（塞車→解除→抵達），15 分鐘 | 35.1／39.3 W | 61°C | 26.8／41.4% | 27.9（+22.4）GB | 57.5（40.6、23.9） |
+| roleB（B 台） | 35B＋橋接；前 20 分鐘每 10 秒一句，後 10 分鐘 4 連線壓力 | 19.4／38.6 W（展示頻率 12.1／28.6、壓力 34.0／38.6） | 63°C | 4.0／13.9% | 57.3（+51.8）GB | — |
+| full（單機備案） | 全部同一台，自動跑 7 輪，30 分鐘 | 35.9／46.6 W | 63°C | 27.2／42.2% | 78.3（+72.8）GB | 55.9（34.0、23.2） |
+
+- LLM：roleB 展示頻率 120/120、平均 1.02 秒（P95 1.35）；roleB 壓力 987/987、平均 2.44 秒（P95 3.50）、每分鐘 98.5 句；full 84/84、約 1.63 秒。
+- 記憶體分項（RSS）：BeamNG 7.4～7.7 GB、Earth 伺服器 9.5 GB、Steam 5.1 GB；vLLM 保留 44.5 GB（統一記憶體）＋行程 7.6 GB。
+- 整機功耗量不到（`nvidia-smi -q -d POWER` 的 Module Power Readings 是 N/A；DGX Dashboard 只有 GPU 使用率和記憶體），以原廠變壓器額定 240 W 為上限，另用插座型電表量。
+- 原始資料：`logs/power_mem/{full,roleA,idle,roleB}_20261118_*`、`~/codriver-dgx/logs/roles_1118_1000/`。
 
 ### 模型比較（11/18，遊戲同時在跑，App 真正的提示詞，temperature 0、enable_thinking=false）
 
