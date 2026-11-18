@@ -217,6 +217,8 @@ def main():
                     help="低於這個時速算走走停停（預設 10，環境變數 CODRIVER_JAM_KMH）")
     ap.add_argument("--jam-sec", type=float, default=float(env("CODRIVER_JAM_SEC", "20")),
                     help="持續幾秒算塞車（預設 20，環境變數 CODRIVER_JAM_SEC）")
+    ap.add_argument("--jam-cars", type=int, default=int(env("CODRIVER_JAM_CARS", "2")),
+                    help="前方 40 公尺內同方向至少幾台車才算塞車（遊戲有送位置時才用；bng jam on 時放寬成 1 台）")
     ap.add_argument("--places", default=env("CODRIVER_PLACES", os.path.join(HERE, "places.json")),
                     help="地名 → 座標對照表（導航同步用）")
     a = ap.parse_args()
@@ -226,7 +228,8 @@ def main():
     psock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)       # 位置／GPS
     psock.bind((a.listen, a.port + 1))
     print(f"橋接啟動：BeamNG OutGauge {a.listen}:{a.port}、位置 {a.listen}:{a.port + 1} → 手機 {a.phone}（Ctrl+C 結束）")
-    print(f"塞車判斷：低於 {a.jam_kmh:.0f} km/h 持續 {a.jam_sec:.0f} 秒")
+    print(f"塞車判斷：低於 {a.jam_kmh:.0f} km/h 持續 {a.jam_sec:.0f} 秒，而且前方至少 {a.jam_cars} 台車"
+          f"（沒有位置資料時只看車速；bng jam on 時放寬成 1 台）")
     sources = set()          # 收過 OutGauge 的來源 IP（雙機模式時確認是 A 台送來的）
 
     game = Game(a.port + 2)
@@ -280,6 +283,7 @@ def main():
                                     "remainingM": g.get("remaining"), "etaS": g.get("eta"),
                                     "planning": bool(g.get("planning"))} if isinstance(g, dict) else None,
                             "arrivedSeq": j.get("arrivedSeq", 0), "arrivedName": j.get("arrivedName", ""),
+                            "carsAhead": j.get("carsAhead"), "jamActive": bool(j.get("jamActive")),
                             "_at": now}
                     if pose["arrivedSeq"] and pose["arrivedSeq"] != getattr(game, "arrived_seen", 0):
                         game.arrived_seen = pose["arrivedSeq"]
@@ -314,13 +318,21 @@ def main():
         kmh, pct = int(round(speed)), int(round(fuel.value))
 
         # 塞車判斷 → 通知手機（手機只在導航中理會）
+        # 低速夠久，而且前面真的有車（停紅燈、路邊停車不算）；沒有位置資料就只看車速；bng jam on 中放寬成 1 台
         event = None
+        fresh = pose if pose and now - pose["_at"] < 3.0 else None
+        ahead = fresh.get("carsAhead") if fresh else None
+        forced = bool(fresh and fresh.get("jamActive"))
         if kmh < a.jam_kmh:
             slow_since = slow_since or now
             if not jam and now - slow_since >= a.jam_sec:
-                jam = True
-                event = "jam"
-                print(f"【塞車】已經 {now - slow_since:.0f} 秒低於 {a.jam_kmh:.0f} km/h → 通知副駕")
+                if ahead is None or ahead >= (1 if forced else a.jam_cars):
+                    jam = True
+                    event = "jam"
+                    why = "沒有位置資料，只看車速" if ahead is None else f"前方 {ahead} 台車" + ("（bng jam on）" if forced else "")
+                    print(f"【塞車】已經 {now - slow_since:.0f} 秒低於 {a.jam_kmh:.0f} km/h，{why} → 通知副駕")
+                elif int(now - slow_since) % 10 == 0:
+                    print(f"…慢速 {now - slow_since:.0f} 秒，但前方只有 {ahead} 台車（紅燈或停車？）→ 不算塞車")
         else:
             if jam:
                 event = "jamClear"
@@ -345,8 +357,10 @@ def main():
             mark = "✗ 手機沒連上"
         slow = f"  慢速 {now - slow_since:3.0f} 秒" if slow_since else ""
         gps = ""
-        if pose and pose.get("gps") and pose["gps"].get("remainingM") is not None:
-            gps = f"  GPS 剩 {pose['gps']['remainingM'] / 1000:.1f} 公里"
+        if fresh and fresh.get("gps") and fresh["gps"].get("remainingM") is not None:
+            gps = f"  GPS 剩 {fresh['gps']['remainingM'] / 1000:.1f} 公里"
+        if ahead is not None:
+            gps += f"  前車 {ahead}" + ("  [jam on]" if forced else "")
         print(f"車速 {kmh:4d} km/h  油量 {pct:3d} %  {mark}{slow}{gps}")
 
 

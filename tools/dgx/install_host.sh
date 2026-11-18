@@ -65,8 +65,9 @@ file "$EARTH_DIR/server/earthfast.abi3.so" | grep -q aarch64 && echo "earthfast 
 
 say "4. CoDriver 的 BeamNG mod"
 mkdir -p "$BEAMNG_USER/mods/unpacked"
-rm -rf "$BEAMNG_USER/mods/unpacked/codriver"
-cp -r "$HERE/beamng_mod/codriver" "$BEAMNG_USER/mods/unpacked/codriver"
+# 直接覆蓋，不要先刪資料夾：遊戲執行中刪掉的話，mod 的掛載會失效（擴充載入失敗，要重開遊戲）
+mkdir -p "$BEAMNG_USER/mods/unpacked/codriver"
+cp -r "$HERE/beamng_mod/codriver/." "$BEAMNG_USER/mods/unpacked/codriver/"
 echo "OK：$BEAMNG_USER/mods/unpacked/codriver"
 
 say "完成。啟動：$HERE/start_codriver.sh　停止：$HERE/stop_codriver.sh　操作：$HERE/bng"
