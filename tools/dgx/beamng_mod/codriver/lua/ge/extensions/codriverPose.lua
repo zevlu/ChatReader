@@ -9,6 +9,8 @@
 --   {"t":"route","version":..,"dist":公尺,"dur":秒,"points":[[lat,lon],...]}   路線改變時、之後每 10 秒重送
 -- 收：port = OutGauge port + 2（預設 4446），只接受這兩種，而且只接受 OutGauge 位址或本機送來的：
 --   {"cmd":"gps","lat":..,"lon":..,"name":".."}   {"cmd":"gpsClear"}
+-- 送和收用同一個綁在 4446 的 socket（封包裡 "reply":true）：橋接把指令送回「位置封包的來源位址和 port」，
+-- 遊戲台在 NAT 後面（只能單向連到車機台）時也收得到；位置每秒送一次，NAT 的對應不會過期。
 local M = {}
 
 local sendSock, cmdSock, cmdPort = nil, nil, nil
@@ -22,9 +24,11 @@ local function host() return settings.getValue('protocols_outgauge_address') or 
 local function basePort() return tonumber(settings.getValue('protocols_outgauge_port')) or 4444 end
 
 local function send(tbl)
-  if not sendSock then return end
+  local sock = cmdSock or sendSock        -- 優先用收指令的 socket 送（NAT 才會讓橋接的回覆進來）
+  if not sock then return end
+  tbl.reply = cmdSock ~= nil              -- true：橋接可以直接回到這個封包的來源位址和 port
   local ok, s = pcall(jsonEncode, tbl)
-  if ok and s then sendSock:sendto(s, host(), basePort() + 1) end
+  if ok and s then sock:sendto(s, host(), basePort() + 1) end
 end
 
 local function openSockets()
@@ -39,7 +43,7 @@ local function openSockets()
   else
     cmdSock:settimeout(0)
     cmdPort = want
-    log('I', 'codriverPose', 'CODRIVER_POSE sending to ' .. host() .. ':' .. (basePort() + 1) .. ', commands on UDP ' .. want)
+    log('I', 'codriverPose', 'CODRIVER_POSE sending to ' .. host() .. ':' .. (basePort() + 1) .. ' from UDP ' .. want .. ' (commands come back on the same socket)')
   end
 end
 

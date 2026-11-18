@@ -1,0 +1,62 @@
+# CoDriver 展示操作員小抄（A 台遊戲／B 台車機）
+
+> 列印版：`tools/dgx/operator_cheatsheet.html` 用瀏覽器開 → 列印 → A4 **雙面**一張（正面開場／快速鍵／指令，反面出錯怎麼辦；改內容請改這份 .md，再請 Claude 重新產生 HTML）。
+> 指令都在 repo 根目錄 `~/ChatReader` 執行；`bng` = `tools/dgx/bng`。
+
+## 開場（約 7 分鐘）
+
+| 順序 | 在哪 | 做什麼 | 看到什麼才算好 |
+|---|---|---|---|
+| 1 | B 台 | `docker compose up -d` | `docker compose logs -f codriver-llm` 出現 `Application startup complete.`（約 5 分鐘） |
+| 2 | B 台 | `python3 tools/dgx/llm_bench.py --rounds 1` | `意圖正確 12/12` |
+| 3 | B 台 | 手機 USB 接上 → `adb forward tcp:8765 tcp:8765`、`adb reverse tcp:8300 tcp:8300` → 開 CoDriver | `docker compose logs --tail 3 codriver-bridge` 不再出現「✗ 手機沒連上」 |
+| 4 | A 台 | 第一次：`echo "RELAY_TO=<B 台 IP>" > ~/codriver-dgx/local.conf` → `tools/dgx/start_codriver.sh` | 最後一行「完成！」（約 2 分鐘） |
+| 5 | A 台 | `tail -3 ~/codriver-dgx/logs/relay.log` | 「30 秒內：OutGauge 1600 左右、位置 30 左右」 |
+| 6 | B 台 | Chromium 開 `http://localhost:8765/?unit=1` | 地圖上有車子的位置 |
+
+## 遊戲內快速鍵（BeamNG 視窗在前景時）
+
+| 按鍵 | 功能 | 什麼時候用 |
+|---|---|---|
+| **Ctrl+Alt+1** | 塞車 開／關 | 開到東寧路右轉旗楠路前按「開」；CoDriver 問完、駕駛說「送出」後再按一次解除 |
+| **Ctrl+Alt+2** | 回起點（清豐二路，GPS 重設到楠梓車站麥當勞，車頭對準路線） | 每一輪展示開始前；約 20 秒 |
+| **Ctrl+Alt+3** | 把車放回路上 | 撞牆、卡住、翻車 |
+| **Ctrl+Alt+4** | 交通車重生 | 交通車跑光了、或都擠在一起 |
+| **Ctrl+Alt+5** | 自動駕駛 開／關 | 沒有人開車時讓車子沿導航自己開；要自己開或自動駕駛卡住時再按一次關掉 |
+
+按下後畫面上方會出現一行提示。遊戲原本的鍵：**R** 原地重置、**J** 暫停。
+
+## 常用指令（A 台終端機）
+
+| 指令 | 用途 |
+|---|---|
+| `bng start` | 回起點（和 Ctrl+Alt+2 一樣，會印出結果） |
+| `bng auto on` ／ `bng auto off` | 自動駕駛開／關（和 Ctrl+Alt+5 一樣） |
+| `bng jam on` ／ `bng jam off` | 塞車開／關 |
+| `bng gps 楠梓車站麥當勞` ／ `bng gps off` | 遊戲 GPS 導航／取消 |
+| `bng road` ／ `bng reset` | 車放回路上／原地重置 |
+| `bng traffic 10` ／ `bng traffic off` | 叫 10 台交通車／全部移除（10 台以上 FPS 會掉） |
+| `bng day` | 天色變暗時固定回白天 |
+| `bng status` | 位置、FPS、OutGauge 目標 |
+| `tools/dgx/stop_codriver.sh` → `tools/dgx/start_codriver.sh` | 遊戲整個重開（約 2 分鐘） |
+
+## 出錯怎麼辦
+
+| 狀況 | 先做 | 還是不行 |
+|---|---|---|
+| 車卡住、翻車、開進奇怪的地方 | Ctrl+Alt+3 | Ctrl+Alt+2 回起點 |
+| 路面沒有導航箭頭、或箭頭變成直線 | `bng gps 楠梓車站麥當勞`，等 10 秒 | 網路斷了：路線快取會自動接手（排練時有錄過的路線）；還是直線就在 `local.conf` 加 `EARTH_OFFLINE=1` 重開遊戲。手機熱點接 DGX 的 Wi-Fi 是主案 |
+| 塞車了 CoDriver 卻沒開口 | 確認車速低於 10 km/h 已超過 20 秒，前方至少 1 台車 | B 台 `docker compose logs --tail 20 codriver-bridge` 要看到「【塞車】… → 通知副駕」；出現「✗ 手機沒連上」就是手機的問題 |
+| 車機網頁的地圖不動、B 台橋接說沒收到 BeamNG 的資料 | A 台 `tail ~/codriver-dgx/logs/relay.log`：OutGauge、位置都是 0 → 轉送沒開，`bng status` 要是 `OutGauge 開 127.0.0.1:4444`，重開 `start_codriver.sh` | 轉送有數字但 B 台收不到 → B 台防火牆的來源 IP 不對（部署清單 2.6） |
+| 自動駕駛卡住不動 | Ctrl+Alt+5 關掉，自己開過去 | Ctrl+Alt+3 放回路上 |
+| AI 不回答、App 顯示錯誤 | B 台 `python3 tools/dgx/llm_bench.py --rounds 1`（App 會自動偵測模型名稱，不用手動填） | 有錯就 `docker compose restart codriver-llm`（約 3.5 分鐘）；手機那邊重做 `adb reverse tcp:8300 tcp:8300` |
+| 手機斷線 | 重新插 USB，再執行一次 `adb forward …`、`adb reverse …` | 重開 CoDriver App |
+| 遊戲畫面當住或關掉 | `tools/dgx/stop_codriver.sh` → `tools/dgx/start_codriver.sh` | 看 `~/codriver-dgx/logs/game_*.log` 最後幾行 |
+| 畫面變暗 | `bng day` | — |
+
+## 不要做
+
+- 不要按 BeamNG.Earth 的「Update now」（版本凍結在 1.9.1-beta）。
+- 不要在 Steam 按 STOP；關遊戲用 `stop_codriver.sh`。
+- Steam 同一個帳號同時只能在一台跑遊戲：要換 C 台備援，先關 A 台的遊戲。
+- 不要停或刪除別組（ai-truth-lab）的容器。

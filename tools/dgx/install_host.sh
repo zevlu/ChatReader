@@ -44,14 +44,23 @@ else
 fi
 if [ ! -x "$EARTH_VENV/bin/python" ]; then
   python3 -m venv "$EARTH_VENV"
-  "$EARTH_VENV/bin/pip" install -q --upgrade pip
+  "$EARTH_VENV/bin/pip" install -q --upgrade pip || echo "（沒網路，跳過 pip 升級）"
 fi
-"$EARTH_VENV/bin/pip" install -q -r "$EARTH_DIR/server/requirements.txt"
+# 會場沒網路：事先在有網路的 DGX 執行 pip download -r server/requirements.txt -d $EARTH_DIR/wheels（DEPLOY_CHECKLIST），
+# 這裡看到 wheels/ 就只從它安裝，不連網路
+if [ -d "$EARTH_DIR/wheels" ]; then
+  echo "從 $EARTH_DIR/wheels 離線安裝 Python 套件"
+  "$EARTH_VENV/bin/pip" install -q --no-index --find-links "$EARTH_DIR/wheels" -r "$EARTH_DIR/server/requirements.txt"
+else
+  "$EARTH_VENV/bin/pip" install -q -r "$EARTH_DIR/server/requirements.txt"
+fi
 # 學校網路固定連不上 GitHub 部分 IP：每個 IP 最多等 4 秒就換下一個（.pth 一定會被載入；sitecustomize.py 會被 Ubuntu 的蓋掉）
 SPK=$("$EARTH_VENV/bin/python" -c "import site; print(site.getsitepackages()[0])")
 cp "$HERE/codriver_netfix.py" "$SPK/codriver_netfix.py"
-echo "import codriver_netfix" > "$SPK/codriver_netfix.pth"
+cp "$HERE/codriver_routecache.py" "$SPK/codriver_routecache.py"      # 導航路線錄製／重播（會場沒網路時的備案）
+printf 'import codriver_netfix\nimport codriver_routecache\n' > "$SPK/codriver_netfix.pth"
 "$EARTH_VENV/bin/python" -c "import socket; assert socket.create_connection.__module__ == 'codriver_netfix'; print('網路修正 OK')"
+"$EARTH_VENV/bin/python" -c "import sys, codriver_routecache; assert any(type(f).__name__ == '_Hook' for f in sys.meta_path); print('路線快取 OK')"
 if [ ! -f "$EARTH_DIR/server/earthfast.abi3.so" ]; then
   if ! command -v cargo > /dev/null && [ ! -x "$HOME/.cargo/bin/cargo" ]; then
     echo "安裝 Rust（只裝在使用者資料夾 ~/.cargo、~/.rustup）..."

@@ -34,7 +34,9 @@ services:
       # 有設定才會要求 Authorization: Bearer <金鑰>（App 的 local.properties IAI_KEY 要一樣）
       - VLLM_API_KEY=${CODRIVER_LLM_KEY:-}
     ports:
-      - "${CODRIVER_LLM_PORT:-8300}:8000"
+      # 只綁本機：手機透過 adb reverse 或 SSH 通道連 127.0.0.1:8300。不要改成 0.0.0.0——
+      # Docker 的 port 會繞過 ufw，模型會暴露給整個網段（DGX 常在學校公開網段）
+      - "127.0.0.1:${CODRIVER_LLM_PORT:-8300}:8000"
     volumes:
       - ${CODRIVER_MODELS_DIR:-~/codriver-models}:/models:ro
     ipc: host
@@ -69,6 +71,7 @@ services:
       - CODRIVER_JAM_KMH=${CODRIVER_JAM_KMH:-10}    # 低於這個時速……
       - CODRIVER_JAM_SEC=${CODRIVER_JAM_SEC:-20}    # ……持續幾秒，
       - CODRIVER_JAM_CARS=${CODRIVER_JAM_CARS:-2}   # ……而且前方至少幾台車，就送 jam 給手機
+      - CODRIVER_GAME_ADDR=${CODRIVER_GAME_ADDR:-}  # 選填：遊戲台位址（平常自動回到位置封包的來源，NAT 後面也通）
       - TZ=Asia/Taipei
     volumes:
       - ./tools/beamng:/app:ro

@@ -1,0 +1,7 @@
+{
+"codriver_jam_toggle"     :{"cat":"gameplay", "order": 90, "ctx": "tlua", "onDown": "if codriverHotkeys then codriverHotkeys.press('jam') end", "title": "CoDriver：塞車 開／關", "desc": "導航路線前方擋住車道、交通車排隊；再按一次解除" },
+"codriver_back_to_start"  :{"cat":"gameplay", "order": 91, "ctx": "tlua", "onDown": "if codriverHotkeys then codriverHotkeys.press('start') end", "title": "CoDriver：回起點", "desc": "回展示路線起點、重設 GPS、車頭對準路線" },
+"codriver_to_road"        :{"cat":"gameplay", "order": 92, "ctx": "tlua", "onDown": "if codriverHotkeys then codriverHotkeys.press('road') end", "title": "CoDriver：把車放回路上", "desc": "卡住或翻車時，放回最近的道路" },
+"codriver_traffic_respawn":{"cat":"gameplay", "order": 93, "ctx": "tlua", "onDown": "if codriverHotkeys then codriverHotkeys.press('traffic') end", "title": "CoDriver：交通車重生", "desc": "交通車重新分散到附近；沒有交通車時叫出 10 台" },
+"codriver_autodrive_toggle":{"cat":"gameplay", "order": 94, "ctx": "tlua", "onDown": "if codriverHotkeys then codriverHotkeys.press('auto') end", "title": "CoDriver：自動駕駛 開／關", "desc": "BeamNG.Earth 自動駕駛沿導航路線開；關掉換駕駛自己開" }
+}

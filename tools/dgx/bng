@@ -28,9 +28,13 @@ cat <<'EOF'
   bng window [寬 高]        改成視窗模式（預設 1280 720）
   bng fullscreen            改回 1920x1080 無邊框全螢幕
   bng day [小時]            固定成白天（預設 13 點、時間不走；Earth 預設跟真實時間，晚上會全黑）
+  bng auto [on|off]         自動駕駛（沿導航路線自己開）開／關；不給參數就切換（遊戲裡是 Ctrl+Alt+5）
   bng pause | resume        暫停／繼續（遊戲裡是 J 鍵）
   bng reset                 把車重置在原地（遊戲裡是 R 鍵）
   bng road                  把車放回最近走過的道路（卡在奇怪地方時用）
+  bng hotkeys               把 codriver-dgx.conf 的起點／目的地交給遊戲內快速鍵（start_codriver.sh 會自動做）
+                            快速鍵：Ctrl+Alt+1 塞車開關、Ctrl+Alt+2 回起點、Ctrl+Alt+3 車放回路上、Ctrl+Alt+4 交通車重生、Ctrl+Alt+5 自動駕駛開關
+  bng shot [名稱]           遊戲畫面截圖（1920x1080、沒有 imgui 提示），存到 ~/codriver-shots/<名稱>.png
   bng status                目前位置、FPS、車輛狀態、OutGauge 目標
   bng lua '<Lua 程式>'      直接執行 GE Lua（進階）
 EOF
@@ -104,6 +108,20 @@ case "$1" in
     if [ "$2" = off ]; then send "local ui = require('beamngEarth/ui') ui.visible = false return 'panel hidden'"
     else send "local ui = require('beamngEarth/ui') ui.visible = true ui.hudHidden = false return 'panel shown'"; fi ;;
   face) send "return codriverJam.faceRoute()" ;;
+  shot)
+    # BeamNG 自己的截圖：直接拿遊戲畫面，螢幕鎖定時也能用；imgui（快速鍵提示、已抵達橫幅）不會被截進去。檔名會被轉成小寫
+    name=${2:-shot_$(date +%m%d_%H%M%S)}; low=$(echo "codriver_shot_$name" | tr 'A-Z' 'a-z')
+    send "local s = rawget(_G, 'screenshot') or require('screenshot') s.doScreenshot(nil, nil, '/$low', 'png') return '截圖中'" > /dev/null || exit 1
+    mkdir -p ~/codriver-shots
+    for i in $(seq 1 20); do [ -s "$U/$low.png" ] && break; sleep 0.5; done
+    sleep 0.5; mv "$U/$low.png" ~/codriver-shots/"$name".png 2>/dev/null && echo "已存：$HOME/codriver-shots/$name.png" || echo "截圖失敗（看遊戲 log）" ;;
+  hotkeys)
+    # 起點／目的地：codriver-dgx.conf 的 START_PLACE／START_GPS（名稱查上面的 PLACES，或直接寫「緯度 經度」）
+    ll() { local v=${PLACES[$1]:-$1}; [[ "$v" =~ ^-?[0-9.]+\ +-?[0-9.]+$ ]] && echo "$v"; }
+    s=$(ll "$START_PLACE"); d=$(ll "$START_GPS")
+    [ -n "$s" ] || { echo "START_PLACE「$START_PLACE」不在 PLACES 裡，也不是「緯度 經度」"; exit 1; }
+    if [ -n "$d" ]; then dest="{lat=${d% *}, lon=${d#* }, name='$START_GPS'}"; else dest=false; fi
+    send "if not codriverHotkeys then return '快速鍵沒有載入（mod 要更新）' end return codriverHotkeys.config({start={lat=${s% *}, lon=${s#* }, name='$START_PLACE'}, dest=$dest, traffic=${START_TRAFFIC:-10}})" ;;
   start)
     send "require('beamngEarth/gps').setAutodrive(false) codriverDest.clear() return codriverJam.off()" > /dev/null
     "$0" place "$START_PLACE" || exit 1
@@ -125,6 +143,9 @@ case "$1" in
     h=${2:-13}
     # BeamNG 的時間是 0～1 的比例，正午 = 0；Earth 的天空改成 manual（存在設定裡），不然它會改回真實時間
     send "local h = $h local st = beamngEarth_settings if st and st.set then st.set('skyMode', 'manual') end local ok, sky = pcall(require, 'beamngEarth/sky') if ok and sky.setMode then sky.setMode('manual') end core_environment.setTimeOfDay({time = ((h - 12) / 24) % 1, play = false}) return string.format('固定在 %02d:00（時間不走）', h)" ;;
+  auto)
+    case "$2" in on) v=true ;; off) v=false ;; *) v="not g.autodrive()" ;; esac
+    send "local g = require('beamngEarth/gps') local on = g.setAutodrive($v) return on and '自動駕駛 開（沿導航路線自己開）' or '自動駕駛 關（駕駛自己開）'" ;;
   pause)  send "simTimeAuthority.pause(true) return 'paused'" ;;
   resume) send "simTimeAuthority.pause(false) simTimeAuthority.set(1) return 'running'" ;;
   reset)  send "resetGameplay(0) return 'reset'" ;;

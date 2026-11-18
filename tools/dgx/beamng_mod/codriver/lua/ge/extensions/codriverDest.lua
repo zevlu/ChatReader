@@ -95,7 +95,9 @@ local function placeMarkers(d)
   for k = 0, 2 do                                                        -- 3 個三角錐：抵達點前 0／5／10 公尺
     spawnAt('cones', 'vehicles/cones/large_orange_double.pc', endPos - dir * (k * 5) + right * edge, dir)
   end
-  spawnAt('sunburst2', nil, endPos + dir * 8 + right * math.max(0.5, radius - 0.9), dir)   -- 抵達點前方 8 公尺，貼著路緣停一台車
+  -- 黃車：抵達點前方 6 公尺，一半停在人行道上（車身中心在路緣外 0.9 公尺），不佔車道
+  -- （11/18 以前停在車道裡，擋住最後一段路，自動駕駛會卡在它後面）
+  spawnAt('sunburst2', nil, endPos + dir * 6 + right * (radius + 1.2), dir)
   placedKey = d.key
   log('I', 'codriverDest', string.format('CODRIVER_DEST markers at %s (route end, road half-width %.1f m)', tostring(d.name), radius))
   return true
