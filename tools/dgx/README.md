@@ -20,11 +20,22 @@ A：BeamNG ──OutGauge UDP（車速、油量）──▶ B：codriver-bridge 
 
 單機模式（A＋B 在同一台，開發／測試用）：全部用 127.0.0.1。
 
-**改成雙機只要改兩個設定：**
-1. A 台 `tools/dgx/codriver-dgx.conf`：`OUTGAUGE_HOST=<B 台 IP>`，再執行 `tools/dgx/bng outgauge`。
-2. B 台 `.env`：`CODRIVER_OUTGAUGE_LISTEN=0.0.0.0`，再執行 `docker compose up -d`。
+**改成雙機（11/18～19 實測：#1 spark-6f5b 遊戲 → #2 nkust-dgx50 車機＋AI）：**
 
-B 台的防火牆（ufw）要開放 A 台送來的 UDP 4444，指令是 `sudo ufw allow from <A 台 IP> to any port 4444 proto udp`。
+1. **B 台** `.env`：`CODRIVER_OUTGAUGE_LISTEN=0.0.0.0`，再執行 `docker compose up -d`。
+2. **B 台**防火牆（ufw，DGX OS 預設是開的；要 sudo）：只開 UDP 4444（OutGauge）、4445（位置／路線）給 A 台：
+   `sudo ufw allow from <A 台對外 IP> to any port 4444:4445 proto udp comment 'CoDriver A'`
+   - 「A 台對外 IP」是 B 台看到的來源位址。A 台在 NAT 後面時不是它的內網 IP；在 B 台執行 `echo $SSH_CLIENT`（從 A 台 ssh 過去）可以看到。
+   - **不用開 4446**：B 台的 GPS 指令是回到「位置封包的來源位址和 port」（mod 的送和收用同一個 4446 socket），NAT 後面也收得到。
+   - **8300（AI 模型）只綁 127.0.0.1**（docker-compose.yml 寫死）：Docker 的 port 會繞過 ufw，不能綁 0.0.0.0。
+3. **A 台**：`~/codriver-dgx/local.conf`（這台機器自己的設定，不進 git）寫一行，再執行 `start_codriver.sh`：
+   ```bash
+   echo "RELAY_TO=<B 台 IP>" > ~/codriver-dgx/local.conf
+   ```
+   - **會場預設一律用轉送（RELAY_TO）**，B 台不管是私有網段還是公開 IP 都能用，現場只要記這一種。
+   - 原因：**BeamNG 內建的 LuaSocket 只准送到私有位址**（127.x、10.x、172.16～31.x、192.168.x），送到公開 IP 會回 `restricted`。所以遊戲一律送到 127.0.0.1，由 `codriver_relay.py`（只用 Python 標準函式庫）轉送 UDP 4444／4445 到 B 台，再把 B 台回的 GPS 指令轉回遊戲。`start_codriver.sh` 會自動開它（log：`~/codriver-dgx/logs/relay.log`）；遊戲已經開著時，手動執行 `setsid -f python3 tools/dgx/codriver_relay.py --to <B 台 IP>` 再 `bng outgauge 127.0.0.1`。
+   - 備案（不用轉送）：B 台是私有 IP 時，可以改寫 `OUTGAUGE_HOST=<B 台 IP>`（不寫 RELAY_TO），遊戲直接送。
+4. 確認：B 台 `docker compose logs --tail 5 codriver-bridge` 看到車速、`GPS 剩 … 公里`；從手機導航後，A 台 `relay.log`（或遊戲 log 的 `CODRIVER_GPS set`）看到 GPS 指令。
 
 > Steam 同一個帳號同時只能在一台電腦跑遊戲。C 台當 A 台備援時，要先把 A 台的遊戲關掉。
 
@@ -100,6 +111,7 @@ tools/dgx/bng                                # 列出所有操作指令
 | **Ctrl+Alt+2** | 回起點：停自動駕駛、清標記與塞車 → 傳送到 `START_PLACE` → GPS 設到 `START_GPS` → 車頭對準路線（約 20 秒） |
 | **Ctrl+Alt+3** | 把車放回最近的道路 |
 | **Ctrl+Alt+4** | 交通車重新分散到附近；沒有交通車時叫出 `START_TRAFFIC` 台 |
+| **Ctrl+Alt+5** | BeamNG.Earth 自動駕駛 開／關（沿 GPS 路線自己開；關掉換駕駛手動，`bng auto on|off` 也可以） |
 
 起點、目的地由 `start_codriver.sh` 執行 `bng hotkeys` 從 `codriver-dgx.conf` 帶進遊戲。按鍵定義在 mod 的 `lua/ge/extensions/core/input/actions/codriver.json`，預設綁定在 `settings/inputmaps/keyboard_codriver.json`（BeamNG 原本沒用到 Ctrl+Alt+數字）。操作員小抄：[OPERATOR_CHEATSHEET.md](OPERATOR_CHEATSHEET.md)。
 
@@ -231,6 +243,18 @@ codriver-llm（Qwen3-8B，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸�
 - 記憶體分項（RSS）：BeamNG 7.4～7.7 GB、Earth 伺服器 9.5 GB、Steam 5.1 GB；vLLM 保留 44.5 GB（統一記憶體）＋行程 7.6 GB。
 - 整機功耗量不到（`nvidia-smi -q -d POWER` 的 Module Power Readings 是 N/A；DGX Dashboard 只有 GPU 使用率和記憶體），以原廠變壓器額定 240 W 為上限，另用插座型電表量。
 - 原始資料：`logs/power_mem/{full,roleA,idle,roleB}_20261118_*`、`~/codriver-dgx/logs/roles_1118_1000/`。
+
+### 雙機實測（11/19 00:22～01:10，#1 遊戲台 → #2 車機＋AI 台，手機經 SSH 通道接 #2，完整故事 2 輪）
+
+| 機器 | 跑什麼 | GPU 平均／最大 | GPU 最高溫 | CPU 平均／最大 | 整台記憶體最大（減 idle） | FPS 平均（P5、最低） |
+|---|---|---|---|---|---|---|
+| #1 spark-6f5b（A） | 遊戲＋Earth＋10 台交通車＋轉送，Moonlight 遠端看 | 36.2／43.3 W | 69°C | 24.5／50.8% | 28.2 GB（+22.7，idle 5.5） | 59.5（58.5、27.0） |
+| #2 nkust-dgx50（B） | 35B＋橋接，真實手機故事 | 9.2／33.6 W | 41°C | 0.5／5.6% | 55.4 GB（+50.9，idle 4.5） | — |
+| #2 idle | 容器全停（沒有接顯示器、沒有串流） | 3.0／3.1 W | — | 0.3／4.6% | 4.5 GB | — |
+
+- 跟 11/18 單機分工量測（A 35.1／39.3 W、+22.4 GB；B 19.4／38.6 W、+51.8 GB）幾乎一樣。#1 的 GPU 最大值稍高，是因為這次全程有 Moonlight 串流（Sunshine 用 GPU 編碼）。
+- 雙機時遊戲 FPS 平均 59.5，高於單機全開的 55.9：LLM 不再跟遊戲搶 GPU。
+- B 台在故事中的 AI 請求：第 1 輪 5 次＋改模型名稱前的 404 2 次；第 2 輪 5 次，全部 200。
 
 ### 模型比較（11/18，遊戲同時在跑，App 真正的提示詞，temperature 0、enable_thinking=false）
 

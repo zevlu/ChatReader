@@ -50,17 +50,25 @@ flowchart LR
 
 ## 硬體需求（實測）
 
-每台都是 **NVIDIA DGX Spark**（GB10、128 GB 統一記憶體、Ubuntu 24.04 arm64）。2026-11-18 依展示分工實測：
+每台都是 **NVIDIA DGX Spark**（GB10、128 GB 統一記憶體、Ubuntu 24.04 arm64）。**實測 2 次，雙機與單機分工的結果一致**，每台取兩次量測的最大值：
 
-| 角色 | 跑什麼 | GPU 功耗 平均／最大 | 整台記憶體 最大（扣掉 idle） | 遊戲 FPS 平均（P5） |
-|---|---|---|---|---|
-| idle（基準） | 作業系統、桌面串流（這台還有別組的容器，閒置中） | 11.0／11.5 W | 5.5 GB | — |
-| **A 台**：遊戲 | BeamNG＋Earth 高雄＋10 台交通車＋塞車，自動開完整路線 4 輪，15 分鐘 | 35.1／39.3 W | 27.9 GB（+22.4） | 57.5（40.6） |
-| **B 台**：AI＋橋接 | Qwen3.6-35B-A3B＋橋接，30 分鐘（20 分鐘展示頻率＋10 分鐘壓力測試） | 19.4／38.6 W | 57.3 GB（+51.8） | — |
-| 單機全開（備案） | A＋B 全部在同一台，自動開 7 輪，30 分鐘 | 35.9／46.6 W | 78.3 GB（+72.8） | 55.9（34.0） |
+| 機器 | 跑什麼 | GPU 功耗 最大 | 整台記憶體 最大 | 整機功耗上限 | 遊戲 FPS |
+|---|---|---|---|---|---|
+| **#1 遊戲台** | BeamNG＋Earth 高雄＋10 台交通車＋塞車＋Moonlight 串流 | **43.3 W** | **28.2 GB** | 240 W（變壓器額定） | 平均 59.5 |
+| **#2 車機＋AI 台** | Qwen3.6-35B-A3B（vLLM）＋橋接，含 10 分鐘壓力測試 | **38.6 W** | **57.3 GB** | 240 W（變壓器額定） | — |
 
-- **整機功耗**：DGX Spark 沒有整機功耗感測器（`nvidia-smi` 的 Module Power 是 N/A，DGX Dashboard 只有 GPU 使用率和記憶體），表上是 GPU 功耗。整機上限以原廠變壓器額定 **240 W** 為準，另以插座型電表實測。
-- B 台的記憶體大部分是 vLLM 預先保留的（`CODRIVER_LLM_GPU_MEM=0.40`：模型 34.5 GiB＋KV 快取），跟請求多寡無關。
+兩次量測的明細：
+
+| 量測 | #1 遊戲台 GPU 平均／最大、記憶體最大 | #2 AI 台 GPU 平均／最大、記憶體最大 |
+|---|---|---|
+| 11/18 單機分工（同一台輪流只跑 A 或 B 的部分，B 含壓力測試） | 35.1／39.3 W、27.9 GB | 19.4／38.6 W、57.3 GB |
+| 11/19 雙機實測（兩台同時，真實手機完整故事 2 輪，#1 全程 Moonlight 串流） | 36.2／43.3 W、28.2 GB | 9.2／33.6 W、55.4 GB |
+| idle（基準） | 11.0 W、5.5 GB | 3.0 W、4.5 GB（沒接顯示器） |
+| 備案：單機全開（A＋B 同一台） | 35.9／46.6 W、78.3 GB，FPS 55.9 | （同左） |
+
+- **整機功耗**：DGX Spark 沒有整機功耗感測器（`nvidia-smi` 的 Module Power 是 N/A，DGX Dashboard 只有 GPU 使用率和記憶體），表上是 GPU 功耗。整機以原廠變壓器額定 **240 W** 為上限，另以插座型電表實測。
+- #1 的 GPU 最大值來自雙機實測：全程有 Moonlight 遠端看畫面（Sunshine 用 GPU 編碼）。
+- #2 的記憶體大部分是 vLLM 預先保留的（`CODRIVER_LLM_GPU_MEM=0.40`：模型 34.5 GiB＋KV 快取），跟請求多寡無關。
 - FPS 的低點都在每輪開頭（傳送回起點、交通車重新分布）；開車途中 55～60。
 - LLM（App 真正的提示詞）：
 
@@ -79,11 +87,12 @@ flowchart LR
 ```bash
 # 事前：Sunshine（遠端看桌面）、Steam snap 登入、BeamNG 遊戲檔放進 Steam 資料夾（見 tools/dgx/README.md）
 tools/dgx/install_host.sh        # FEX 設定、BeamNG.Earth＋ARM venv、codriver mod
+echo "RELAY_TO=<B 台 IP>" > ~/codriver-dgx/local.conf   # 雙機：遊戲 → 本機轉送 → B 台（會場預設）
 tools/dgx/start_codriver.sh      # 一鍵啟動：Steam → Earth → BeamNG → 高雄起點 → GPS → 10 台交通車（約 2 分鐘）
 tools/dgx/bng status             # 位置、FPS、OutGauge 目標
 ```
 
-遊戲內快速鍵：**Ctrl+Alt+1** 塞車開／關、**Ctrl+Alt+2** 回起點、**Ctrl+Alt+3** 車放回路上、**Ctrl+Alt+4** 交通車重生。操作員小抄：[tools/dgx/OPERATOR_CHEATSHEET.md](tools/dgx/OPERATOR_CHEATSHEET.md)。
+遊戲內快速鍵：**Ctrl+Alt+1** 塞車開／關、**Ctrl+Alt+2** 回起點、**Ctrl+Alt+3** 車放回路上、**Ctrl+Alt+4** 交通車重生、**Ctrl+Alt+5** 自動駕駛開／關。操作員小抄：[tools/dgx/OPERATOR_CHEATSHEET.md](tools/dgx/OPERATOR_CHEATSHEET.md)。
 
 ### 第二層：B 台 docker compose（AI＋橋接）
 

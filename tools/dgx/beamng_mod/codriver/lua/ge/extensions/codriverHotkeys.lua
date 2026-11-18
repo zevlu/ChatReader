@@ -3,6 +3,7 @@
 --   Ctrl+Alt+2  回起點（停自動駕駛、清標記與塞車 → 傳送 → 等地圖 → 設 GPS → 等路線 → 車頭對準 → 關面板）
 --   Ctrl+Alt+3  把車放回路上（卡住、翻車時）
 --   Ctrl+Alt+4  交通車重生（重新分散到玩家附近；沒有交通車就叫出 10 台）
+--   Ctrl+Alt+5  自動駕駛 開／關（BeamNG.Earth 的自動駕駛沿 GPS 路線開；關掉就是駕駛自己開）
 -- 按鍵定義：core/input/actions/codriver.json；預設綁定：settings/inputmaps/keyboard_codriver.json
 -- 起點、目的地預設是展示路線；start_codriver.sh 會用 codriver-dgx.conf 的值呼叫 M.config（bng hotkeys）
 local M = {}
@@ -130,6 +131,14 @@ function M.trafficRespawn()
   end
 end
 
+-- ---- 5. 自動駕駛 開／關 ----
+function M.autoToggle()
+  local ok, gps = pcall(require, 'beamngEarth/gps')
+  if not ok or not gps or not gps.setAutodrive then toast('BeamNG.Earth 還沒載入') return end
+  local on = gps.setAutodrive(not gps.autodrive())
+  toast(on and '自動駕駛 開：沿導航路線自己開（再按一次換手動）' or '自動駕駛 關：換你自己開', 4)
+end
+
 -- start_codriver.sh／bng hotkeys：{start={lat,lon,name}, dest={lat,lon,name}|false, jamDist, jamCars, traffic}
 function M.config(c)
   for k, v in pairs(c or {}) do cfg[k] = v end
@@ -141,7 +150,8 @@ function M.getConfig() return cfg end
 
 -- 按鍵進來的入口（actions json 的 onDown 呼叫；包 pcall，出錯只顯示提示，不讓遊戲跳錯誤）
 function M.press(name)
-  local f = ({ jam = M.jamToggle, start = M.backToStart, road = M.toRoad, traffic = M.trafficRespawn })[name]
+  local f = ({ jam = M.jamToggle, start = M.backToStart, road = M.toRoad, traffic = M.trafficRespawn,
+               auto = M.autoToggle })[name]
   if not f then return end
   local ok, err = pcall(f)
   if not ok then toast('快速鍵錯誤：' .. tostring(err), 6) end

@@ -183,25 +183,46 @@ class NavSync(threading.Thread):
 
 
 class Game:
-    """送指令給遊戲裡的 codriverPose（位置封包的來源 IP，OutGauge port + 2）。"""
+    """送指令給遊戲裡的 codriverPose。
 
-    def __init__(self, cmd_port):
-        self.addr, self.cmd_port, self.pending = None, cmd_port, None
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    回傳位址的優先順序：
+      1. 位置封包裡有 "reply": true（新版 mod：送和收用同一個綁在 OutGauge port + 2 的 socket）
+         → 送回這個封包的「來源 IP 和 port」。遊戲台在 NAT 後面（只能單向連到車機台）也收得到，
+           所以要從收位置封包的同一個 socket（OutGauge port + 1）送出去，NAT 才認得這是回覆。
+      2. 舊版 mod → 位置封包的來源 IP、port = OutGauge port + 2。
+      3. 還沒收到任何位置封包 → 設定的 --game（CODRIVER_GAME_ADDR，選填，例如 192.168.50.17:4446）；
+         也沒設定就先存著，等收到第一個位置封包再送。
+    """
 
-    def seen(self, ip):
-        if self.addr != ip:
-            self.addr = ip
-            print(f"📍 收到 {ip} 送來的位置／GPS（遊戲指令會送回 {ip}:{self.cmd_port}）")
+    def __init__(self, sock, cmd_port, fallback=None):
+        self.sock, self.cmd_port, self.fallback = sock, cmd_port, fallback
+        self.addr, self.pending = None, None
+
+    def seen(self, addr, reply):
+        target = (addr[0], addr[1]) if reply else (addr[0], self.cmd_port)
+        if self.addr != target:
+            how = "回到位置封包的來源（NAT 也通）" if reply else "舊版 mod：固定 port"
+            print(f"📍 收到 {addr[0]}:{addr[1]} 送來的位置／GPS → 遊戲指令送回 {target[0]}:{target[1]}（{how}）")
+            self.addr = target
         if self.pending:
             self.command(self.pending)
 
     def command(self, obj):
-        if not self.addr:
+        target = self.addr or self.fallback
+        if not target:
             self.pending = obj          # 還不知道遊戲在哪台：等收到第一個位置封包再送
             return
         self.pending = None
-        self.sock.sendto(json.dumps(obj, ensure_ascii=False).encode("utf-8"), (self.addr, self.cmd_port))
+        self.sock.sendto(json.dumps(obj, ensure_ascii=False).encode("utf-8"), target)
+
+
+def parse_addr(s, default_port):
+    """'192.168.50.17' 或 '192.168.50.17:4446' → (ip, port)；空字串 → None"""
+    s = (s or "").strip()
+    if not s:
+        return None
+    host, _, port = s.partition(":")
+    return (host, int(port) if port else default_port)
 
 
 def main():
@@ -219,6 +240,8 @@ def main():
                     help="持續幾秒算塞車（預設 20，環境變數 CODRIVER_JAM_SEC）")
     ap.add_argument("--jam-cars", type=int, default=int(env("CODRIVER_JAM_CARS", "2")),
                     help="前方 40 公尺內同方向至少幾台車才算塞車（遊戲有送位置時才用；bng jam on 時放寬成 1 台）")
+    ap.add_argument("--game", default=env("CODRIVER_GAME_ADDR", ""),
+                    help="選填：遊戲台的位址（IP 或 IP:port），只在還沒收到位置封包時用；平常自動回到位置封包的來源")
     ap.add_argument("--places", default=env("CODRIVER_PLACES", os.path.join(HERE, "places.json")),
                     help="地名 → 座標對照表（導航同步用）")
     a = ap.parse_args()
@@ -232,7 +255,7 @@ def main():
           f"（沒有位置資料時只看車速；bng jam on 時放寬成 1 台）")
     sources = set()          # 收過 OutGauge 的來源 IP（雙機模式時確認是 A 台送來的）
 
-    game = Game(a.port + 2)
+    game = Game(psock, a.port + 2, parse_addr(a.game, a.port + 2))
     NavSync(a.phone, Places(a.places), game).start()
 
     fuel = FuelFilter()
@@ -274,7 +297,7 @@ def main():
         for data, addr in drain(psock, 65535):
             try:
                 j = json.loads(data.decode("utf-8"))
-                game.seen(addr[0])
+                game.seen(addr, bool(j.get("reply")))
                 if j.get("t") == "pose":
                     g = j.get("gps")
                     pose = {"type": "pose", "lat": j.get("lat"), "lon": j.get("lon"), "heading": j.get("heading"),

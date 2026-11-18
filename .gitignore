@@ -28,3 +28,4 @@ local.properties
 
 # 給使用者看的報告、交接（連到家目錄的檔案，不要 commit）
 /notes/
+__pycache__/

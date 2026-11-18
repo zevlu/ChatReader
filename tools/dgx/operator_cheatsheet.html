@@ -57,14 +57,14 @@ h2:nth-of-type(4) { break-before: page; }
 <tr>
 <td>4</td>
 <td>A 台</td>
-<td><code>tools/dgx/start_codriver.sh</code></td>
+<td>第一次：<code>echo "RELAY_TO=&lt;B 台 IP&gt;" &gt; ~/codriver-dgx/local.conf</code> → <code>tools/dgx/start_codriver.sh</code></td>
 <td>最後一行「完成！」（約 2 分鐘）</td>
 </tr>
 <tr>
 <td>5</td>
 <td>A 台</td>
-<td><code>bng status</code></td>
-<td><code>OutGauge 開 &lt;B 台 IP&gt;:4444</code>、FPS 約 60</td>
+<td><code>tail -3 ~/codriver-dgx/logs/relay.log</code></td>
+<td>「30 秒內：OutGauge 1600 左右、位置 30 左右」</td>
 </tr>
 <tr>
 <td>6</td>
@@ -104,6 +104,11 @@ h2:nth-of-type(4) { break-before: page; }
 <td>交通車重生</td>
 <td>交通車跑光了、或都擠在一起</td>
 </tr>
+<tr>
+<td><strong>Ctrl+Alt+5</strong></td>
+<td>自動駕駛 開／關</td>
+<td>沒有人開車時讓車子沿導航自己開；要自己開或自動駕駛卡住時再按一次關掉</td>
+</tr>
 </tbody>
 </table>
 <p>按下後畫面上方會出現一行提示。遊戲原本的鍵：<strong>R</strong> 原地重置、<strong>J</strong> 暫停。</p>
@@ -119,6 +124,10 @@ h2:nth-of-type(4) { break-before: page; }
 <tr>
 <td><code>bng start</code></td>
 <td>回起點（和 Ctrl+Alt+2 一樣，會印出結果）</td>
+</tr>
+<tr>
+<td><code>bng auto on</code> ／ <code>bng auto off</code></td>
+<td>自動駕駛開／關（和 Ctrl+Alt+5 一樣）</td>
 </tr>
 <tr>
 <td><code>bng jam on</code> ／ <code>bng jam off</code></td>
@@ -176,14 +185,19 @@ h2:nth-of-type(4) { break-before: page; }
 <td>B 台 <code>docker compose logs --tail 20 codriver-bridge</code> 要看到「【塞車】… → 通知副駕」；出現「✗ 手機沒連上」就是手機的問題</td>
 </tr>
 <tr>
-<td>車機網頁的地圖不動</td>
-<td><code>bng status</code> 看 OutGauge 是否指向 B 台</td>
-<td><code>bng outgauge</code>；B 台 <code>docker compose restart codriver-bridge</code></td>
+<td>車機網頁的地圖不動、B 台橋接說沒收到 BeamNG 的資料</td>
+<td>A 台 <code>tail ~/codriver-dgx/logs/relay.log</code>：OutGauge、位置都是 0 → 轉送沒開，<code>bng status</code> 要是 <code>OutGauge 開 127.0.0.1:4444</code>，重開 <code>start_codriver.sh</code></td>
+<td>轉送有數字但 B 台收不到 → B 台防火牆的來源 IP 不對（部署清單 2.6）</td>
 </tr>
 <tr>
-<td>AI 不回答、App 顯示 404</td>
-<td>App 設定的模型名稱必須是 <code>Qwen3.6-35B-A3B-FP8</code></td>
-<td>B 台 <code>python3 tools/dgx/llm_bench.py --rounds 1</code>；有錯就 <code>docker compose restart codriver-llm</code>（5 分鐘）</td>
+<td>自動駕駛卡住不動</td>
+<td>Ctrl+Alt+5 關掉，自己開過去</td>
+<td>Ctrl+Alt+3 放回路上</td>
+</tr>
+<tr>
+<td>AI 不回答、App 顯示錯誤</td>
+<td>B 台 <code>python3 tools/dgx/llm_bench.py --rounds 1</code>（App 會自動偵測模型名稱，不用手動填）</td>
+<td>有錯就 <code>docker compose restart codriver-llm</code>（約 3.5 分鐘）；手機那邊重做 <code>adb reverse tcp:8300 tcp:8300</code></td>
 </tr>
 <tr>
 <td>手機斷線</td>

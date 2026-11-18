@@ -67,22 +67,72 @@ Earth 地圖快取 `~/.cache/beamng-earth/`（索引用相對路徑）和 BeamNG
 | 1 | **Steam 離線模式能不能啟動遊戲** | Steam → Steam 選單 → Go Offline，重開 Steam，再執行 `start_codriver.sh` | ⏳ |
 | 2 | **Earth 沒有網路時能不能用快取載入高雄** | `run_earth_server.sh --offline`，再執行 `start_codriver.sh` | ✅ 11/18：起點、終點的地形、建築、樹、衛星影像都從快取載入；畫面上方會出現黃色提示「internet data sources unreachable」。**但導航路線（OSRM）要網路**：離線時遊戲箭頭變成直線指向目的地，車機網頁的路線、真實到達時間、轉彎提示退回 15 分鐘備援 |
 | 3 | 展示路線整條都有快取 | 有網路時沿著展示路線開一遍，讓 Earth 把沿途資料抓進快取 | ⏳ |
-| 4 | 雙機 OutGauge＋位置（A → B） | A 台設 `OUTGAUGE_HOST=<B IP>`，B 台 `.env` 設 `CODRIVER_OUTGAUGE_LISTEN=0.0.0.0`。防火牆：B 台開 UDP 4444（OutGauge）、4445（位置／GPS）給 A；A 台開 UDP 4446（GPS 指令）給 B | 單台模擬已通過；兩台⏳ |
-| 5 | 手機接 B 台：`adb forward 8765`＋`adb reverse 8300`，App 連本機 LLM | 跑完整故事 | ⏳ |
+| 4 | 雙機 OutGauge＋位置（A → B）＋GPS 指令（B → A） | 見 README「改成雙機」：B 台 `.env` 設 `CODRIVER_OUTGAUGE_LISTEN=0.0.0.0`、ufw 開 UDP 4444:4445 給 A；A 台 `local.conf` 設 `RELAY_TO=<B 台 IP>`（會場預設；見 2.6） | ✅ 11/19：#1 → #2（公開 IP、#1 在 NAT 後面），用轉送；完整故事 2 輪都成功 |
+| 5 | 手機接 B 台：`adb forward 8765`＋`adb reverse 8300`，App 連本機 LLM | 跑完整故事 | 🔶 11/19 手機接筆電、SSH 通道到 #2 已通過；USB 直接接 B 台待測 |
 | 6 | 60 分鐘穩定性（`full` 情境） | `power_mem_monitor.py --label full --duration 3600` | ⏳ |
 | 7 | 新的 DGX 從零安裝一遍（照 README） | 計時，確認沒有漏掉的步驟 | ⏳ |
+
+## 2.5 B 台部署演練紀錄（11/18 18:11～18:23，#2 nkust-dgx50，從零開始）
+
+| 步驟 | 時間 | 備註 |
+|---|---|---|
+| rsync 映像檔 11.1 GB | 96 秒 | 約 115 MB/s（同棟有線網路）；外接硬碟會更慢，抓 3～5 分鐘 |
+| rsync 35B 模型 37.5 GB | 323 秒 | 同上 |
+| sha256 驗證（映像檔＋模型 56 個檔案） | 22 秒 | 全部 OK |
+| `zstd -dc … \| docker load` | 137 秒 | |
+| 確認容器能用 GPU | 約 10 秒 | `docker run --rm --gpus all --entrypoint nvidia-smi nvcr.io/nvidia/vllm:26.10-py3 -L`。#2 的 Docker 沒有註冊 `nvidia` runtime，但有 CDI（`/var/run/cdi/nvidia.yaml`），`--gpus`／compose 的 `driver: nvidia` 都能用 |
+| 複製 repo、`cp .env.example .env`、改 `CODRIVER_MODELS_DIR`、`CODRIVER_OUTGAUGE_LISTEN=0.0.0.0` | 1 分鐘 | |
+| `docker compose up -d codriver-bridge` | 立刻 | |
+| `docker compose up -d codriver-llm` 到 `Application startup complete.` | 3 分 25 秒 | 35B；`llm_bench.py --rounds 1`：12/12、平均 0.94 秒 |
+| ufw 開 UDP 4444:4445 | 1 分鐘 | 要 sudo，由機器管理者執行 |
+| **合計** | **約 15 分鐘**（不含外接硬碟複製） | |
+
+演練時發現、已補進文件的：
+- **BeamNG 只准送到私有位址**：B 台是公開 IP 時要用 `RELAY_TO`（README「改成雙機」）。
+- **ufw 預設開著**：B 台要開 UDP 4444:4445；4446 不用開。
+- **8300 原本綁 0.0.0.0**（Docker 繞過 ufw，模型暴露在校網）：已改成只綁 127.0.0.1。
+- **手機重新插 USB 後 `adb forward` 會消失**：`adb forward --list` 是空的就重做 forward／reverse。
+- **App 預設模型名稱還是 `Qwen3-8B`**：會 404，要在設定頁改成 `Qwen3.6-35B-A3B-FP8`（App 下一版改預設值）。
+
+## 2.6 雙機網路設定（會場一律用轉送）
+
+**A 台（遊戲台）**：`echo "RELAY_TO=<B 台 IP>" > ~/codriver-dgx/local.conf`，然後 `tools/dgx/start_codriver.sh`。
+- 為什麼一律轉送：BeamNG 只准送到私有 IP，用轉送時 B 台是私有或公開 IP 都一樣能用，現場只記一種設定。
+- 備案：B 台是私有 IP 時，可以改用 `OUTGAUGE_HOST=<B 台 IP>`（不寫 RELAY_TO）直接送。
+
+**B 台（車機台）防火牆**：只開 UDP 4444:4445，**來源 IP 到會場會不一樣**。在實驗室加的是 `163.18.21.115`（#1 在實驗室的對外 IP），到會場要重查：
+
+```bash
+# 1) 在 A 台查「B 台看到的 A 台 IP」（A 在 NAT 後面時，這才是對的來源 IP）
+ssh nkust@<B 台 IP> 'echo $SSH_CLIENT' | cut -d' ' -f1
+#    A、B 在同一個私有網段（沒有 NAT）時，也可以直接在 A 台看自己的 IP：
+hostname -I
+
+# 2) 在 B 台加規則（要 sudo，由機器管理者執行；把上面查到的 IP 填進去）
+sudo ufw allow from <A 台對外 IP> to any port 4444:4445 proto udp comment 'CoDriver A'
+#    查不到、或 A 台的對外 IP 會變（例如 DHCP、多個 NAT 出口）：改成允許整個網段，例如
+sudo ufw allow from 192.168.1.0/24 to any port 4444:4445 proto udp comment 'CoDriver A subnet'
+
+# 3) 確認、以及展示完拿掉
+sudo ufw status numbered
+sudo ufw delete <規則編號>
+```
+
+- 不用開 4446：B 台的 GPS 指令回到「位置封包的來源位址和 port」，NAT 也通。
+- 8300（AI 模型）只綁 127.0.0.1，不用也不要開。
+- 驗證：B 台 `docker compose logs --tail 5 codriver-bridge` 要看到車速和 `GPS 剩 … 公里`。沒有的話，先看 A 台 `~/codriver-dgx/logs/relay.log` 有沒有「OutGauge N、位置 N」（N > 0），有的話就是 B 台防火牆的來源 IP 不對。
 
 ## 3. 會場當天的開機順序
 
 1. B 台：`docker compose up -d` → 用 `docker compose logs -f codriver-llm` 等到 ready → 執行 `python3 tools/dgx/llm_bench.py --count 3`
 2. B 台：手機 USB 接上 → 執行 `adb forward tcp:8765 tcp:8765`、`adb reverse tcp:8300 tcp:8300` → 開 CoDriver
-3. A 台：`tools/dgx/start_codriver.sh` → 執行 `bng status`，確認 OutGauge 指向 B 台
+3. A 台：`~/codriver-dgx/local.conf` 寫 `RELAY_TO=<B 台 IP>`（見 2.6）→ `tools/dgx/start_codriver.sh` → 看 `~/codriver-dgx/logs/relay.log` 有「OutGauge N、位置 N」
 4. B 台：`docker compose logs -f codriver-bridge`，要看到「📥 收到 <A 台 IP> 送來的 OutGauge」和「✅ 手機收到了」
 5. 車機網頁：`http://localhost:8765/?unit=1`（Chromium）
 
 ## 4. 已知限制與注意事項
 
-- BeamNG 沒有遊戲內選單：常用操作用遊戲內快速鍵（Ctrl+Alt+1 塞車開關、2 回起點、3 車放回路上、4 交通車重生），其他用 `bng`。現場操作員要先熟悉 [OPERATOR_CHEATSHEET.md](OPERATOR_CHEATSHEET.md)（列印版 `operator_cheatsheet.html`）。
+- BeamNG 沒有遊戲內選單：常用操作用遊戲內快速鍵（Ctrl+Alt+1 塞車開關、2 回起點、3 車放回路上、4 交通車重生、5 自動駕駛開關），其他用 `bng`。現場操作員要先熟悉 [OPERATOR_CHEATSHEET.md](OPERATOR_CHEATSHEET.md)（列印版 `operator_cheatsheet.html`）。
 - 交通車最多 10～12 台，15 台會掉到 15 FPS。
 - 版本要凍結：BeamNG 0.40.5、Earth 1.9.1-beta（已經有 1.10.1，**不要按 Update now**）、vLLM 26.10。
 - Steam 同一個帳號同時只能在一台跑遊戲，C 台當備援時要先關 A 台。

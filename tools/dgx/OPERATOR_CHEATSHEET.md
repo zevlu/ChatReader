@@ -10,8 +10,8 @@
 | 1 | B 台 | `docker compose up -d` | `docker compose logs -f codriver-llm` 出現 `Application startup complete.`（約 5 分鐘） |
 | 2 | B 台 | `python3 tools/dgx/llm_bench.py --rounds 1` | `意圖正確 12/12` |
 | 3 | B 台 | 手機 USB 接上 → `adb forward tcp:8765 tcp:8765`、`adb reverse tcp:8300 tcp:8300` → 開 CoDriver | `docker compose logs --tail 3 codriver-bridge` 不再出現「✗ 手機沒連上」 |
-| 4 | A 台 | `tools/dgx/start_codriver.sh` | 最後一行「完成！」（約 2 分鐘） |
-| 5 | A 台 | `bng status` | `OutGauge 開 <B 台 IP>:4444`、FPS 約 60 |
+| 4 | A 台 | 第一次：`echo "RELAY_TO=<B 台 IP>" > ~/codriver-dgx/local.conf` → `tools/dgx/start_codriver.sh` | 最後一行「完成！」（約 2 分鐘） |
+| 5 | A 台 | `tail -3 ~/codriver-dgx/logs/relay.log` | 「30 秒內：OutGauge 1600 左右、位置 30 左右」 |
 | 6 | B 台 | Chromium 開 `http://localhost:8765/?unit=1` | 地圖上有車子的位置 |
 
 ## 遊戲內快速鍵（BeamNG 視窗在前景時）
@@ -22,6 +22,7 @@
 | **Ctrl+Alt+2** | 回起點（清豐二路，GPS 重設到楠梓車站麥當勞，車頭對準路線） | 每一輪展示開始前；約 20 秒 |
 | **Ctrl+Alt+3** | 把車放回路上 | 撞牆、卡住、翻車 |
 | **Ctrl+Alt+4** | 交通車重生 | 交通車跑光了、或都擠在一起 |
+| **Ctrl+Alt+5** | 自動駕駛 開／關 | 沒有人開車時讓車子沿導航自己開；要自己開或自動駕駛卡住時再按一次關掉 |
 
 按下後畫面上方會出現一行提示。遊戲原本的鍵：**R** 原地重置、**J** 暫停。
 
@@ -30,6 +31,7 @@
 | 指令 | 用途 |
 |---|---|
 | `bng start` | 回起點（和 Ctrl+Alt+2 一樣，會印出結果） |
+| `bng auto on` ／ `bng auto off` | 自動駕駛開／關（和 Ctrl+Alt+5 一樣） |
 | `bng jam on` ／ `bng jam off` | 塞車開／關 |
 | `bng gps 楠梓車站麥當勞` ／ `bng gps off` | 遊戲 GPS 導航／取消 |
 | `bng road` ／ `bng reset` | 車放回路上／原地重置 |
@@ -45,8 +47,9 @@
 | 車卡住、翻車、開進奇怪的地方 | Ctrl+Alt+3 | Ctrl+Alt+2 回起點 |
 | 路面沒有導航箭頭 | `bng gps 楠梓車站麥當勞`，等 10 秒 | 網路斷了：箭頭會變成直線指向目的地（地圖還是能用）。手機熱點接 DGX 的 Wi-Fi |
 | 塞車了 CoDriver 卻沒開口 | 確認車速低於 10 km/h 已超過 20 秒，前方至少 1 台車 | B 台 `docker compose logs --tail 20 codriver-bridge` 要看到「【塞車】… → 通知副駕」；出現「✗ 手機沒連上」就是手機的問題 |
-| 車機網頁的地圖不動 | `bng status` 看 OutGauge 是否指向 B 台 | `bng outgauge`；B 台 `docker compose restart codriver-bridge` |
-| AI 不回答、App 顯示 404 | App 設定的模型名稱必須是 `Qwen3.6-35B-A3B-FP8` | B 台 `python3 tools/dgx/llm_bench.py --rounds 1`；有錯就 `docker compose restart codriver-llm`（5 分鐘） |
+| 車機網頁的地圖不動、B 台橋接說沒收到 BeamNG 的資料 | A 台 `tail ~/codriver-dgx/logs/relay.log`：OutGauge、位置都是 0 → 轉送沒開，`bng status` 要是 `OutGauge 開 127.0.0.1:4444`，重開 `start_codriver.sh` | 轉送有數字但 B 台收不到 → B 台防火牆的來源 IP 不對（部署清單 2.6） |
+| 自動駕駛卡住不動 | Ctrl+Alt+5 關掉，自己開過去 | Ctrl+Alt+3 放回路上 |
+| AI 不回答、App 顯示錯誤 | B 台 `python3 tools/dgx/llm_bench.py --rounds 1`（App 會自動偵測模型名稱，不用手動填） | 有錯就 `docker compose restart codriver-llm`（約 3.5 分鐘）；手機那邊重做 `adb reverse tcp:8300 tcp:8300` |
 | 手機斷線 | 重新插 USB，再執行一次 `adb forward …`、`adb reverse …` | 重開 CoDriver App |
 | 遊戲畫面當住或關掉 | `tools/dgx/stop_codriver.sh` → `tools/dgx/start_codriver.sh` | 看 `~/codriver-dgx/logs/game_*.log` 最後幾行 |
 | 畫面變暗 | `bng day` | — |
