@@ -132,10 +132,10 @@ python3 tools/dgx/llm_bench.py --count 5 # 測試回答與延遲
 ```
 
 - `codriver-llm` 使用 `nvcr.io/nvidia/vllm:26.10-py3`（arm64）和 `~/codriver-models/<模型>`。
-- 對外的模型 id 預設是模型資料夾名稱（例如 `Qwen3-8B`），App 設定頁的「模型名稱」填這個。
+- 對外的模型 id 預設是模型資料夾名稱，**現在用 `Qwen3.6-35B-A3B-FP8`**，App 設定頁的「模型名稱」填這個（填錯會 404）。備用 `Qwen3-8B`：`.env` 改 `CODRIVER_LLM_MODEL=Qwen3-8B`、`CODRIVER_LLM_GPU_MEM=0.25`，再 `docker compose up -d codriver-llm`。
 - App 用 `chat_template_kwargs.enable_thinking=false` 關閉 Qwen3 的思考，vLLM 原生支援。
 - 原本的 iAI Hub 模型 `Qwen/Qwen3.8-Flash-Next` 有 1800 億參數、360 GB，DGX 放不下，所以改用本機模型。
-- 下載模型：`tools/dgx/fetch_hf_model.sh Qwen/Qwen3-8B ~/codriver-models/Qwen3-8B`。
+- 下載模型：`tools/dgx/fetch_hf_model.sh Qwen/Qwen3.6-35B-A3B-FP8 ~/codriver-models/Qwen3.6-35B-A3B-FP8`（35 GB；備用的 `Qwen/Qwen3-8B` 16 GB）。
   - 這支腳本用 curl 逐檔續傳，斷線或 DNS 失敗會自動重試，不會從頭來。
   - 學校網路下，Hugging Face 官方的 `hf download` 會卡在 xet，而且斷線就從頭下載。
 - vLLM 映像檔約 11 GB（解壓後 39 GB）。學校網路 DNS 偶爾失敗，`docker pull` 要包在重試迴圈裡跑。
@@ -198,5 +198,18 @@ full（11/17，手機中途斷線）期間的狀況：
 codriver-llm（Qwen3-8B，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸入約 1070 tokens，輸出約 33 tokens）：
 - **只跑 LLM（B 台的情況）**：122 次請求，意圖 100% 正確，延遲平均 2.47 秒、P95 3.1 秒
 - 跟遊戲同一台（單機）：延遲平均 4.3 秒，所以展示時遊戲和 LLM 要分開在 A、B 兩台
+
+### 模型比較（11/18，遊戲同時在跑，App 真正的提示詞，temperature 0、enable_thinking=false）
+
+| | Qwen3-8B（BF16） | **Qwen3.6-35B-A3B-FP8（MoE，現在的預設）** |
+|---|---|---|
+| 指令判斷 | 24/24，平均 4.28 秒、P95 5.48 秒、7.7 tok/s | 24/24，平均 **1.65 秒**、P95 2.24 秒、18.5 tok/s |
+| 路由（car／app） | 8/8，0.86 秒 | 8/8，**0.51 秒** |
+| 模型檔／載入 | 16 GB／約 2.5 分鐘 | 35 GB（權重佔 34.5 GiB）／約 5 分鐘 |
+| `CODRIVER_LLM_GPU_MEM` | 0.25 | 0.40（KV 快取 6.8 GiB，約 19.7 萬 tokens） |
+| 整台已用記憶體（遊戲＋10 台交通車＋LLM） | 約 56 GB | 約 74 GB／121.7 GB |
+
+- 35B-A3B 是 MoE，每個 token 只動用約 30 億參數，所以比 8B 還快；回答也比較自然。
+- LLM 回答的那幾秒，同一台的遊戲 FPS 會從 60 掉到 36～44（搶同一顆 GPU），回答完就回到 60。展示時遊戲在 A 台、LLM 在 B 台就沒有這個問題。
 
 交通車數量對 FPS 的影響（west_coast_usa 地圖）：10 台約 90 FPS、12 台約 80 FPS、**15 台只剩 12～20 FPS**。所以交通車最多用到 10～12 台。

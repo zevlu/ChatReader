@@ -24,7 +24,8 @@
 
 | 資料 | 大小 | 內容 | 必要 |
 |---|---|---|---|
-| `~/codriver-models/Qwen3-8B/` | 16.4 GB | 本機 LLM 模型（換 35B-A3B 則是 37.5 GB）；用 `tools/dgx/fetch_hf_model.sh` 下載，已用 SHA256 驗證 | ✅ |
+| `~/codriver-models/Qwen3.6-35B-A3B-FP8/` | 37.5 GB | 本機 LLM 模型（11/18 起的預設）；用 `tools/dgx/fetch_hf_model.sh` 下載，43 個檔案已用 SHA256 驗證 | ✅ |
+| `~/codriver-models/Qwen3-8B/` | 16.4 GB | 備用模型（35B 出問題時換回來） | 建議 |
 | `~/codriver-deploy/codriver-images.tar.zst`（已匯出，11.1 GB，附 .sha256） | 11.1 GB | vLLM 26.10＋python:3.12-slim；現場載入：`zstd -dc codriver-images.tar.zst \| docker load` | ✅ |
 | ChatReader repo＋`.env` | 小 | `.env` 不在 git 裡，**要另外帶**（裡面可能有金鑰，不要放公開的地方） | ✅ |
 | `adb` 的 .deb（`apt download adb android-libadb …`） | 小 | 會場沒網路時無法 `apt install` | 建議 |

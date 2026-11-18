@@ -21,13 +21,13 @@ services:
     image: ${CODRIVER_LLM_IMAGE:-nvcr.io/nvidia/vllm:26.10-py3}
     container_name: codriver-llm
     restart: unless-stopped
-    # 對外的模型 id（App 設定頁的「模型名稱」要填這個）：預設就是模型資料夾名稱，例如 Qwen3-8B
+    # 對外的模型 id（App 設定頁的「模型名稱」要填這個）：預設就是模型資料夾名稱，例如 Qwen3.6-35B-A3B-FP8
     # App 用 chat_template_kwargs.enable_thinking=false 關閉 Qwen3 的思考，vLLM 原生支援
     command: >
-      vllm serve /models/${CODRIVER_LLM_MODEL:-Qwen3-8B}
-      --served-model-name ${CODRIVER_LLM_SERVED_NAME:-${CODRIVER_LLM_MODEL:-Qwen3-8B}}
+      vllm serve /models/${CODRIVER_LLM_MODEL:-Qwen3.6-35B-A3B-FP8}
+      --served-model-name ${CODRIVER_LLM_SERVED_NAME:-${CODRIVER_LLM_MODEL:-Qwen3.6-35B-A3B-FP8}}
       --host 0.0.0.0 --port 8000
-      --gpu-memory-utilization ${CODRIVER_LLM_GPU_MEM:-0.25}
+      --gpu-memory-utilization ${CODRIVER_LLM_GPU_MEM:-0.40}
       --max-model-len ${CODRIVER_LLM_MAX_LEN:-8192}
       ${CODRIVER_LLM_EXTRA_ARGS:-}
     environment:
