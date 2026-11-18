@@ -144,6 +144,13 @@ BeamNG 內建的 CEF（Chromium 150）在 FEX 轉譯下 renderer 會 segfault。
 - 橋接的塞車條件：低速 20 秒，而且前方 40 公尺內至少 2 台同方向的車（`CODRIVER_JAM_CARS`）；`jam on` 中放寬成 1 台。三角錐、標記車不算前車。
 - 實測：高雄＋10 台交通車＋塞車，FPS 平均 59.4（最低 43.8），GPU 37／42 W。
 
+### 沒有網路時的導航路線（路線快取）
+
+BeamNG.Earth 的導航路線來自線上 OSRM。`codriver_routecache.py`（`install_host.sh` 會裝進 earth-venv，跟 `codriver_netfix` 一起由 `.pth` 載入）會包住世界伺服器的 `routing.plan()`：
+- 有網路：照常問 OSRM，成功的路線存到 `~/.cache/beamng-earth/codriver-routes/`。
+- 失敗（`--offline`、斷線）：找目的地相同（30 公尺內）、車子在路線 150 公尺內的快取，從車子附近截斷後回傳。log 會出現 `CODRIVER_ROUTE replay`。
+- 完全離線展示：`~/codriver-dgx/local.conf` 加 `EARTH_OFFLINE=1`，重開遊戲。不改 BeamNG.Earth 原始碼，有網路時行為完全不變。
+
 ## B 台：docker-compose
 
 ```bash

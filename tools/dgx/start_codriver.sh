@@ -30,7 +30,8 @@ fi
 # 2. BeamNG.Earth 世界伺服器（ARM 原生）
 if ! ss -ltn | grep -q ':47613 '; then
   say "啟動 BeamNG.Earth 世界伺服器..."
-  rm -f "$SLOG"; setsid -f "$HERE/run_earth_server.sh" > /dev/null 2>&1 < /dev/null
+  # EARTH_OFFLINE=1（local.conf）：完全不連網路，只用地圖快取＋導航路線快取（codriver_routecache）
+  rm -f "$SLOG"; setsid -f "$HERE/run_earth_server.sh" ${EARTH_OFFLINE:+--offline} > /dev/null 2>&1 < /dev/null
   waitlog "$SLOG" "World server +running|did not start" 90
   grep -q -E "World server +running" "$SLOG" || { say "世界伺服器啟動失敗，請看 $SLOG"; exit 1; }
 fi
@@ -85,4 +86,4 @@ fi
 if [ "$TRAFFIC" -gt 0 ] 2>/dev/null; then
   say "叫出 $TRAFFIC 台交通車（約 60 秒）..."; "$HERE/bng" traffic "$TRAFFIC"; sleep 60
 fi
-say "完成！用 Alt+Tab 切到 BeamNG 視窗開車。快速鍵：Ctrl+Alt+1 塞車開關、2 回起點、3 車放回路上、4 交通車重生；其他操作：$HERE/bng（遊戲 log：$GLOG）"
+say "完成！用 Alt+Tab 切到 BeamNG 視窗開車。快速鍵：Ctrl+Alt+1 塞車開關、2 回起點、3 車放回路上、4 交通車重生、5 自動駕駛開關；其他操作：$HERE/bng（遊戲 log：$GLOG）"

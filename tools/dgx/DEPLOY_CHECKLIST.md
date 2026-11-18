@@ -12,7 +12,7 @@
 |---|---|---|---|
 | `~/snap/steam/common/.local/share/Steam/steamapps/common/BeamNG.drive` | 53 GB | BeamNG 0.40.5 遊戲檔（Steam 下載太慢，一定要帶） | ✅ |
 | `~/snap/steam/common/.local/share/Steam/steamapps/appmanifest_284160.acf` | 1 KB | 讓 Steam 認得已經安裝 | ✅ |
-| `~/.cache/beamng-earth/` | 6 GB（11/18 實測，上限 20 GB；`logs/` 不用帶） | **Earth 地圖快取**（高雄的地形、衛星影像、道路、建築） | ✅ |
+| `~/.cache/beamng-earth/` | 6 GB（11/18 實測，上限 20 GB；`logs/` 不用帶） | **Earth 地圖快取**（高雄的地形、衛星影像、道路、建築），也包含**導航路線快取** `codriver-routes/` | ✅ |
 | `~/codriver-dgx/BeamNG.Earth/` | 0.8 GB | Earth 1.9.1-beta 原始碼＋已編好的 `server/earthfast.abi3.so`（aarch64） | ✅（沒網路時無法 git clone） |
 | Steam 本體更新檔 `~/snap/steam/common/.local/share/Steam/package/` | 約 1 GB | Steam 第一次啟動要下載的更新（學校網路限速） | 建議 |
 | `~/snap/steam/common/.local/share/BeamNG/BeamNG.drive/current/settings/` | 很小 | 遊戲設定（解析度、垂直同步、OutGauge） | 建議 |
@@ -66,7 +66,7 @@ Earth 地圖快取 `~/.cache/beamng-earth/`（索引用相對路徑）和 BeamNG
 |---|---|---|---|
 | 1 | **Steam 離線模式能不能啟動遊戲** | Steam → Steam 選單 → Go Offline，重開 Steam，再執行 `start_codriver.sh` | ⏳ |
 | 2 | **Earth 沒有網路時能不能用快取載入高雄** | `run_earth_server.sh --offline`，再執行 `start_codriver.sh` | ✅ 11/18：起點、終點的地形、建築、樹、衛星影像都從快取載入；畫面上方會出現黃色提示「internet data sources unreachable」。**但導航路線（OSRM）要網路**：離線時遊戲箭頭變成直線指向目的地，車機網頁的路線、真實到達時間、轉彎提示退回 15 分鐘備援 |
-| 3 | 展示路線整條都有快取 | 有網路時沿著展示路線開一遍，讓 Earth 把沿途資料抓進快取 | ⏳ |
+| 3 | 展示路線整條都有快取（地圖＋導航路線） | 有網路時沿著展示路線開一遍，讓 Earth 把沿途資料抓進快取；導航路線由 `start_codriver.sh` 自動錄進 `~/.cache/beamng-earth/codriver-routes/` | 🔶 路線快取 ✅（11/19）；地圖沿途在 11/18 的自動跑輪已經開過很多次 |
 | 4 | 雙機 OutGauge＋位置（A → B）＋GPS 指令（B → A） | 見 README「改成雙機」：B 台 `.env` 設 `CODRIVER_OUTGAUGE_LISTEN=0.0.0.0`、ufw 開 UDP 4444:4445 給 A；A 台 `local.conf` 設 `RELAY_TO=<B 台 IP>`（會場預設；見 2.6） | ✅ 11/19：#1 → #2（公開 IP、#1 在 NAT 後面），用轉送；完整故事 2 輪都成功 |
 | 5 | 手機接 B 台：`adb forward 8765`＋`adb reverse 8300`，App 連本機 LLM | 跑完整故事 | 🔶 11/19 手機接筆電、SSH 通道到 #2 已通過；USB 直接接 B 台待測 |
 | 6 | 60 分鐘穩定性（`full` 情境） | `power_mem_monitor.py --label full --duration 3600` | ⏳ |
@@ -140,9 +140,14 @@ sudo ufw delete <規則編號>
 - **遊戲 GPS 的路線規劃要網路**：BeamNG.Earth 用線上的 OSRM（routing.openstreetmap.de）。沒網路時路面箭頭會改成直線指向目的地。
   - 車機地圖的圖磚（OpenStreetMap）和 Leaflet 也要網路。
   - 地名換座標先查 `tools/beamng/places.json`（不用網路），展示會用到的地點要事先加進去。
-- **離線備案**（11/18 實測）：地圖可以只用快取，但導航路線一定要網路。會場網路不穩時的選項：
-  - (a) DGX 的 Wi-Fi（wlP9s9）接手機熱點，只給路線規劃用，流量很小
-  - (b) 自架 OSRM（docker osrm-backend＋台灣地圖），把 Earth 的 OSRM_URL 指到本機。比較費工，要另外評估
+- **離線備案**（11/18～19 實測）：地圖用快取；**導航路線用「路線快取」重播**（`codriver_routecache.py`，11/19 實作）。
+  - 主案：DGX 的 Wi-Fi（wlP9s9）接手機熱點，只給路線規劃用，流量很小。
+  - **備案（已實作、已測）：路線快取**。世界伺服器每次向 OSRM 要到路線，就存一份到 `~/.cache/beamng-earth/codriver-routes/`。沒網路時，同一個目的地、車子在路線 150 公尺內，就用存好的路線（從車子附近截斷）。
+    - 排練時在有網路的情況下跑一次 `start_codriver.sh`，它會自動導航一次「起點 → 麥當勞」，這條就錄好了。展示會用到的其他目的地也要各導航一次。
+    - 完全沒網路時，`~/codriver-dgx/local.conf` 加一行 `EARTH_OFFLINE=1`，重開遊戲（`stop_codriver.sh` → `start_codriver.sh`），世界伺服器會用 `--offline` 啟動。不加也可以：網路斷了 OSRM 失敗時一樣會改用快取，只是每次要先等連線逾時。
+    - 11/19 實測：`--offline` 下從起點拿到完整 11 點、1485 公尺的路線；從路線中段重新規劃，截成 6 點、792 公尺；車機網頁也收到同一條路線。
+    - 限制：離開展示路線太遠（150 公尺以上），或換了沒錄過的目的地，還是會退回直線。
+  - 已不需要自架 OSRM。
 - **網路不能依賴**：實驗室的 DNS（1.1.1.1／8.8.8.8）在學校網路下偶爾整段失敗，2026-11-16 曾讓所有下載中斷。
   - 模型、映像檔、遊戲檔、Earth 快取都要事先放在外接硬碟。
   - 在現場只能做「載入」，不能做「下載」。

@@ -57,8 +57,10 @@ fi
 # 學校網路固定連不上 GitHub 部分 IP：每個 IP 最多等 4 秒就換下一個（.pth 一定會被載入；sitecustomize.py 會被 Ubuntu 的蓋掉）
 SPK=$("$EARTH_VENV/bin/python" -c "import site; print(site.getsitepackages()[0])")
 cp "$HERE/codriver_netfix.py" "$SPK/codriver_netfix.py"
-echo "import codriver_netfix" > "$SPK/codriver_netfix.pth"
+cp "$HERE/codriver_routecache.py" "$SPK/codriver_routecache.py"      # 導航路線錄製／重播（會場沒網路時的備案）
+printf 'import codriver_netfix\nimport codriver_routecache\n' > "$SPK/codriver_netfix.pth"
 "$EARTH_VENV/bin/python" -c "import socket; assert socket.create_connection.__module__ == 'codriver_netfix'; print('網路修正 OK')"
+"$EARTH_VENV/bin/python" -c "import sys, codriver_routecache; assert any(type(f).__name__ == '_Hook' for f in sys.meta_path); print('路線快取 OK')"
 if [ ! -f "$EARTH_DIR/server/earthfast.abi3.so" ]; then
   if ! command -v cargo > /dev/null && [ ! -x "$HOME/.cargo/bin/cargo" ]; then
     echo "安裝 Rust（只裝在使用者資料夾 ~/.cargo、~/.rustup）..."

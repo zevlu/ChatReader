@@ -45,7 +45,7 @@
 | 狀況 | 先做 | 還是不行 |
 |---|---|---|
 | 車卡住、翻車、開進奇怪的地方 | Ctrl+Alt+3 | Ctrl+Alt+2 回起點 |
-| 路面沒有導航箭頭 | `bng gps 楠梓車站麥當勞`，等 10 秒 | 網路斷了：箭頭會變成直線指向目的地（地圖還是能用）。手機熱點接 DGX 的 Wi-Fi |
+| 路面沒有導航箭頭、或箭頭變成直線 | `bng gps 楠梓車站麥當勞`，等 10 秒 | 網路斷了：路線快取會自動接手（排練時有錄過的路線）；還是直線就在 `local.conf` 加 `EARTH_OFFLINE=1` 重開遊戲。手機熱點接 DGX 的 Wi-Fi 是主案 |
 | 塞車了 CoDriver 卻沒開口 | 確認車速低於 10 km/h 已超過 20 秒，前方至少 1 台車 | B 台 `docker compose logs --tail 20 codriver-bridge` 要看到「【塞車】… → 通知副駕」；出現「✗ 手機沒連上」就是手機的問題 |
 | 車機網頁的地圖不動、B 台橋接說沒收到 BeamNG 的資料 | A 台 `tail ~/codriver-dgx/logs/relay.log`：OutGauge、位置都是 0 → 轉送沒開，`bng status` 要是 `OutGauge 開 127.0.0.1:4444`，重開 `start_codriver.sh` | 轉送有數字但 B 台收不到 → B 台防火牆的來源 IP 不對（部署清單 2.6） |
 | 自動駕駛卡住不動 | Ctrl+Alt+5 關掉，自己開過去 | Ctrl+Alt+3 放回路上 |
