@@ -193,7 +193,9 @@
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- 2026-11-18：three.js 由手機提供（assets/lib），會場沒網路也能用；從別的地方開這個網頁時才改用 CDN -->
+<script src="/lib/three.min.js"></script>
+<script>window.THREE || document.write('<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"><\/script>');</script>
 <script>
 // ───────────────────────── 連線（手機 CoDriver App） ─────────────────────────
 const params = new URLSearchParams(location.search);
@@ -1006,14 +1008,20 @@ function turnVoice(t) {
   else if (turnStage < 2 && t.dist <= 60) { turnStage = 2; sayTurn(`前面${t.word}`); }
 }
 const CAR_SVG = '<svg class="carArrow" viewBox="0 0 24 24"><path d="M12 2 L20 21 L12 16.5 L4 21 Z" fill="#4ea1ff" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+// 2026-11-18：Leaflet 由手機提供（assets/lib）；手機沒有才改用 CDN。
+// 沒有網路時 OSM 圖磚出不來（底圖是灰的），但車子、路線、目的地照樣畫得出來。
 function loadLeaflet() {
-  const base = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/';
-  const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = base + 'leaflet.min.css';
-  document.head.appendChild(css);
-  const js = document.createElement('script'); js.src = base + 'leaflet.min.js';
-  js.onload = initMap;
-  js.onerror = () => { document.getElementById('map').textContent = '地圖載入失敗（需要網路）'; };
-  document.head.appendChild(js);
+  const load = (base, cssName, jsName, onFail) => {
+    const css = document.createElement('link'); css.rel = 'stylesheet'; css.href = base + cssName;
+    document.head.appendChild(css);
+    const js = document.createElement('script'); js.src = base + jsName;
+    js.onload = initMap;
+    js.onerror = onFail;
+    document.head.appendChild(js);
+  };
+  load('/lib/', 'leaflet.css', 'leaflet.js', () =>
+    load('https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/', 'leaflet.min.css', 'leaflet.min.js',
+      () => { document.getElementById('map').textContent = '地圖載入失敗'; }));
 }
 function initMap() {
   const el = document.getElementById('map');

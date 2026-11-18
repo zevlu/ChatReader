@@ -422,6 +422,7 @@ object CarMate {
     fun testConnections(done: (String) -> Unit) {
         Thread {
             val src = AiSource.label()
+            AiSource.syncModel(app)?.let { m -> main.post { log("🔄 DGX 模型名稱自動更新為 $m") } }
             val ai = if (!LlmClient.isConfigured()) "AI（$src）：未設定" else {
                 val t0 = System.currentTimeMillis()
                 runCatching { LlmClient.chat("只回答「OK」", "測試", temperature = 0.0) }.fold(
