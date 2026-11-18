@@ -877,7 +877,7 @@ const UNIT_KMH = 30;     // 換算公里數用的平均時速
 // 2026-11-17：DGX 的橋接會把 App 的目的地設到遊戲 GPS，並每秒回報位置／剩餘距離／剩餘時間（state.pose）。
 // 有最近 5 秒內的遊戲 GPS 資料就用真的到達時間；沒有就用上面的 15 分鐘估算當備援。
 const unav = { id: -1, dest: '', via: '', viaDone: true, active: false, arrived: false, arriveAt: 0, delay: 0, jam: 0, lastReport: 0,
-               planAt: 0, planSig: '', planPending: false, arrivedSeq0: null };
+               planAt: 0, planSig: '', planPending: false, arrivedSeq0: null, lastLeg: '' };
 const PLAN_WAIT_MS = 8000;   // 規劃時最多等遊戲 GPS 算好路線幾秒，再回報給手機
 let lastPoseAt = 0;
 function hhmmAfter(minutes) {
@@ -887,15 +887,21 @@ function hhmmAfter(minutes) {
 /** 最近 5 秒內遊戲回報的 GPS（沒有就 null） */
 function gameGps() {
   const p = state.pose;
-  if (!p || Date.now() - lastPoseAt > 5000 || !p.gps) return null;
+  // 抵達瞬間橋接可能送「只有 leg 欄位」的 gps（沒有座標），那種不算有 GPS 目的地
+  if (!p || Date.now() - lastPoseAt > 5000 || !p.gps || p.gps.lat == null) return null;
   return p.gps;
 }
 function gpsSig(g) { return g ? `${g.name}|${g.lat}|${g.lon}` : ''; }
 function unitEta() {
   const g = gameGps();
   if (g && g.etaS != null && !g.planning && (unav.active || unav.dest)) {
-    const minutes = Math.max(1, Math.round(g.etaS / 60)) + unav.delay + unav.jam;
-    return { km: Math.round((g.remainingM || 0) / 100) / 10, minutes, arrival: hhmmAfter(minutes), real: true };
+    // 2026-11-19：有停靠點時，橋接先把遊戲 GPS 設到停靠點（gps.leg = "via"），
+    // 並附上停靠點到最後目的地的距離／時間（afterViaM／afterViaS），加起來才是真的到達時間
+    const viaLeg = g.leg === 'via';
+    const etaS = g.etaS + (viaLeg ? (g.afterViaS || 0) : 0);
+    const remM = (g.remainingM || 0) + (viaLeg ? (g.afterViaM || 0) : 0);
+    const minutes = Math.max(1, Math.round(etaS / 60)) + unav.delay + unav.jam;
+    return { km: Math.round(remM / 100) / 10, minutes, arrival: hhmmAfter(minutes), real: true };
   }
   const minutes = Math.max(1, Math.round((unav.arriveAt - Date.now()) / 60000) + unav.delay + unav.jam);
   return { km: Math.round(minutes / 60 * UNIT_KMH * 10) / 10, minutes, arrival: hhmmAfter(minutes), real: false };
@@ -903,7 +909,7 @@ function unitEta() {
 function unitHandleNav(n) {
   if (!n) return;
   if (n.id !== unav.id) {
-    unav.id = n.id; unav.dest = n.dest || ''; unav.via = n.via || (n.viaGas ? '加油站' : '');
+    unav.id = n.id; unav.dest = n.dest || ''; unav.via = n.via || (n.viaGas ? '加油站' : ''); unav.lastLeg = '';
     unav.viaDone = !unav.via; unav.active = false; unav.arrived = false; unav.delay = 0;
     unav.arriveAt = Date.now() + UNIT_MIN * 60000;
     // 先不回報：等橋接把目的地設到遊戲 GPS、路線算好（最多 PLAN_WAIT_MS），副駕唸的分鐘數才會是真的
@@ -928,10 +934,18 @@ function unitPlanTick() {
 /** 遊戲 GPS 抵達（arrivedSeq 變多）就自動抵達，不用按 Shift+D */
 function unitAutoArrive(p) {
   if (!unav.active || !p) return;
+  const leg = (p.gps && p.gps.leg) || p.leg;          // 橋接在 gps 裡和 pose 最外層都會放 leg
+  if (leg) unav.lastLeg = leg;                         // 遊戲 GPS 目前帶你去停靠點（via）還是最後目的地（final）
   const seq = p.arrivedSeq || 0;
   if (unav.arrivedSeq0 == null) { unav.arrivedSeq0 = seq; return; }   // 開始導航時還沒有遊戲資料：以第一次收到的為準
   if (seq > unav.arrivedSeq0) {
-    if (unav.via && !unav.viaDone) unav.viaDone = true;   // 遊戲 GPS 只設最後目的地，到了就算停靠點也過了
+    // 2026-11-19：遊戲 GPS 正在帶你去停靠點（例如加油站）→ 這次抵達是停靠點，繼續等最後目的地
+    if (unav.via && !unav.viaDone && unav.lastLeg === 'via') {
+      unav.arrivedSeq0 = seq; unav.lastLeg = '';
+      unitVia();
+      return;
+    }
+    if (unav.via && !unav.viaDone) unav.viaDone = true;   // 舊版橋接：遊戲 GPS 只設最後目的地，到了就算停靠點也過了
     showBanner(`🏁 到了${unav.dest}`, 3000);
     unitArrive();
   }
@@ -1105,7 +1119,11 @@ function unitNavTick(now) {
     : g ? '🗺 遊戲 GPS 已設定，照路面藍色箭頭開'
     : unav.active ? '遊戲 GPS 還沒設定（地名可能查不到）'
     : '🗺 正在把目的地設到遊戲 GPS…';
-  const viaHint = unav.via && !unav.viaDone ? `<br><span class="hint">遊戲 GPS 只設最後目的地；到「${esc(unav.via)}」請按 Shift+V</span>` : '';
+  const viaHint = unav.via && !unav.viaDone
+    ? (unav.lastLeg === 'via' || (g && g.leg === 'via')
+      ? `<br><span class="hint">遊戲 GPS 先帶你到「${esc(unav.via)}」，到了會自動接到「${esc(unav.dest)}」</span>`
+      : `<br><span class="hint">遊戲 GPS 只設最後目的地；到「${esc(unav.via)}」請按 Shift+V</span>`)
+    : '';
   etaEl.innerHTML = `${unav.active ? '▶' : '⏸ 預覽'} <b>${esc(unav.dest)}</b>${viaTxt}<br>` +
     (unav.planPending ? '路線規劃中…'
       : (e.real ? `還有 ${e.km} 公里・` : '') + `約 ${e.minutes} 分鐘・預計 <b>${e.arrival}</b> 到`) +

@@ -87,7 +87,11 @@ object CarControlBrain {
     /** 在背景執行緒呼叫 */
     fun parse(text: String): CarCommand {
         var by = "手機模型"
-        val content = try {
+        val content = if (AiSource.useDgx) {
+            // 2026-11-19：AI 來源是 DGX 時，車輛控制也交給 DGX（不再試另一支手機，省掉連不上時等 3 秒）
+            by = "DGX ${AiSource.dgxModel}"
+            LlmClient.chat(PROMPT, text, temperature = 0.1)
+        } else try {
             PhoneModel.chat(PROMPT, text, 0.1)
         } catch (e: Exception) {
             by = "雲端（手機模型連不上）"

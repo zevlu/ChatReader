@@ -86,6 +86,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var friendField: EditText
     private lateinit var phoneUrlField: EditText
     private lateinit var phoneModelField: EditText
+    private lateinit var phoneSection: LinearLayout   // B 手機模型設定（DGX 模式時隱藏）
     private lateinit var aiBtn: TextView
     private lateinit var dgxUrlField: EditText
     private lateinit var dgxModelField: EditText
@@ -336,9 +337,13 @@ class MainActivity : AppCompatActivity() {
             addView(text("DGX 模型位址與名稱（手機要 adb reverse tcp:8300 tcp:8300）", 13f, MUTED).apply { setPadding(0, dp(6), 0, 0) })
             addView(dgxUrlField)
             addView(dgxModelField)
-            addView(text("B 手機模型位址（兩支手機要連同一個 Wi-Fi／熱點）", 13f, MUTED).apply { setPadding(0, dp(10), 0, 0) })
-            addView(phoneUrlField)
-            addView(phoneModelField)
+            phoneSection = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(text("B 手機模型位址（兩支手機要連同一個 Wi-Fi／熱點；AI 來源是 iAI 時才用）", 13f, MUTED).apply { setPadding(0, dp(10), 0, 0) })
+                addView(phoneUrlField)
+                addView(phoneModelField)
+            }
+            addView(phoneSection)
             addView(row(smallBtn("儲存並測試連線", ACCENT, BG) { saveAndTest() }, gapH(),
                 smallBtn("無障礙設定") { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
             ).apply { (layoutParams as LinearLayout.LayoutParams).topMargin = dp(8) })
@@ -395,6 +400,9 @@ class MainActivity : AppCompatActivity() {
         setChip(chipAi, "AI：${AiSource.label()}", LlmClient.isConfigured())
         setChip(chipRouter, "路由器", Router.isConfigured())
         setChip(chipPhone, "手機模型", PhoneModel.isSet())
+        // 2026-11-19：DGX 模式時車輛控制也在 DGX，不用另一支手機的模型 → 狀態燈和設定都藏起來
+        chipPhone.visibility = if (AiSource.useDgx) View.GONE else View.VISIBLE
+        if (::phoneSection.isInitialized) phoneSection.visibility = if (AiSource.useDgx) View.GONE else View.VISIBLE
         setChip(chipHands, if (HandsFree.enabled) "免持 聆聽中" else "免持", HandsFree.enabled || CarMate.handsFreeWanted)
 
         val fuel = CarMate.fuelPercent

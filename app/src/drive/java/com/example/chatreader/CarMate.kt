@@ -305,7 +305,7 @@ object CarMate {
         update()
         Thread {
             val dec = Router.decide(text)
-            val where = if (dec.route == Router.Route.PHONE) "B 手機・車輛控制"
+            val where = if (dec.route == Router.Route.PHONE) (if (AiSource.useDgx) "B DGX・車輛控制" else "B 手機・車輛控制")
                         else if (AiSource.useDgx) "A DGX・App 操作" else "A 雲端・App 操作"
             main.post {
                 lastRouteLabel = "🔀 $where"
@@ -429,7 +429,8 @@ object CarMate {
                     { "AI（$src）：✅ ${System.currentTimeMillis() - t0} ms（回答：${it.take(20)}）" },
                     { "AI（$src）：❌ ${it.message}" })
             }
-            val phone = if (!PhoneModel.isSet()) "手機模型：未設定位址" else {
+            val phone = if (AiSource.useDgx) "手機模型：DGX 模式不使用（車輛控制也交給 DGX）"
+                        else if (!PhoneModel.isSet()) "手機模型：未設定位址" else {
                 val t0 = System.currentTimeMillis()
                 runCatching { PhoneModel.chat("只回答「OK」", "測試", 0.0) }.fold(
                     { "手機模型：✅ ${System.currentTimeMillis() - t0} ms（回答：${it.take(20)}）" },
@@ -467,7 +468,9 @@ object CarMate {
         // 用說的告訴 CarMate 要去哪：「去跟孟澤約的地方」或「帶我去高雄車站」
         // 一上車先報告基本狀況（時間、油量），再問要去哪
         // 油不夠：上車就主動問要不要先去加油（展示「完整旅程」從這裡開始）
-        if (fuelPercent <= LOW_FUEL) {
+        // 2026-11-19：BeamNG 車機（?unit=1）不在上車時就去加油站，改成先問目的地，
+        // 規劃路線時再問「要不要順路加油」→ 一條路線含停靠點（先加油、再去約定地點），遲到時間也一起算
+        if (fuelPercent <= LOW_FUEL && !unitMode) {
             fuelChecked = true
             log("⛽ 上車時油量只剩 $fuelPercent%，主動提醒")
             askYesNo("歡迎上車！現在${clock().substring(0, 5)}，油量只剩 $fuelPercent%，可能不夠跑一趟。要先帶你去最近的加油站嗎？") { yes ->
