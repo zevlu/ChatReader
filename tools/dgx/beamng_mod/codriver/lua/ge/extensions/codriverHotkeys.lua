@@ -13,6 +13,7 @@ local cfg = {
   dest  = { lat = 22.727135, lon = 120.326549, name = '楠梓車站麥當勞' },
   jamDist = 450, jamCars = 5, traffic = 10,
   fuel = 12,                       -- 回起點時的油量（%；展示開場「油不夠」，100 = 不改）
+  autoJam = 90,                    -- 加完油開往下一段時自動放塞車，幾秒後自動解除（0 = 不自動，照舊按 Ctrl+Alt+1）
 }
 
 local function api() return rawget(_G, 'beamngEarth_api') end
@@ -44,7 +45,9 @@ local function drawToast(dtReal)
 end
 
 -- ---- 1. 塞車 開／關 ----
+local auto = nil    -- 自動塞車：{ step = 'waitLeg'|'on', left = 秒 }；手動按 Ctrl+Alt+1／Ctrl+Alt+2 就取消
 function M.jamToggle()
+  auto = nil
   local J = rawget(_G, 'codriverJam')
   if not J then toast('塞車功能沒有載入（codriverJam）') return end
   if J.isActive() then
@@ -66,6 +69,7 @@ end
 local job = nil     -- { step, wait, left }
 local function startStep(step, wait) job.step, job.wait = step, wait or 0 end
 function M.backToStart()
+  auto = nil
   local A = api()
   if not A then toast('BeamNG.Earth 還沒載入') return end
   pcall(function() require('beamngEarth/gps').setAutodrive(false) end)
@@ -111,6 +115,52 @@ local function runJob(dtReal)
   end
 end
 
+-- ---- 1b. 自動塞車（2026-11-19：展示時常忘了按 Ctrl+Alt+1）----
+-- 到加油站（停靠點）→ 等遊戲 GPS 換到下一段、路線算好 → 再等 3 秒（車子開出加油站）→ 前方 jamDist 公尺放塞車
+-- → autoJam 秒後自動解除（副駕問塞車、駕駛說「送出」大約要 60 秒）
+local function isGas(name) return name ~= nil and tostring(name):find('加油', 1, true) ~= nil end
+function M.onBeamNGEarthRouteArrived(info)
+  local name = info and info.name
+  if (cfg.autoJam or 0) > 0 and isGas(name) then
+    auto = { step = 'waitLeg', left = 60, t = 0 }
+  end
+end
+local function runAuto(dt)
+  if not auto then return end
+  auto.t = auto.t + dt
+  if auto.t < 1 then return end
+  auto.t = 0
+  auto.left = auto.left - 1
+  local J = rawget(_G, 'codriverJam')
+  if not J then auto = nil return end
+  if auto.step == 'waitLeg' then
+    local A = api()
+    local ok, g = pcall(function() return A and A.gps() end)
+    if ok and g and g.name and not isGas(g.name) and not g.planning and g.remaining then
+      auto.ready = (auto.ready or 0) + 1
+      if auto.ready >= 3 then
+        local d = math.max(80, math.min(cfg.jamDist, g.remaining - 200))
+        local ok2, msg = pcall(J.on, d, cfg.jamCars)
+        if ok2 and J.isActive() then
+          toast('自動塞車：前方約 ' .. math.floor(d) .. ' 公尺（' .. cfg.autoJam .. ' 秒後解除；按 Ctrl+Alt+1 可提早解除）', 6)
+          auto = { step = 'on', left = cfg.autoJam, t = 0 }
+        else
+          toast('自動塞車失敗：' .. tostring(msg), 6) auto = nil
+        end
+      end
+    elseif auto.left <= 0 then
+      auto = nil                                  -- 1 分鐘都沒有下一段（App 沒有接著導航）：不放
+    end
+  elseif auto.step == 'on' then
+    if not J.isActive() then auto = nil return end
+    if auto.left <= 0 then
+      J.off()
+      toast('自動塞車解除：車流恢復', 4)
+      auto = nil
+    end
+  end
+end
+
 -- ---- 3. 把車放回路上 ----
 function M.toRoad()
   spawn.teleportToLastRoad()
@@ -145,8 +195,9 @@ end
 function M.config(c)
   for k, v in pairs(c or {}) do cfg[k] = v end
   if cfg.dest == false then cfg.dest = nil end
-  return string.format('快速鍵設定：起點 %s，目的地 %s，塞車 %d 公尺／%d 台，交通車 %d 台，回起點油量 %d%%',
-    cfg.start.name, cfg.dest and cfg.dest.name or '（無）', cfg.jamDist, cfg.jamCars, cfg.traffic, cfg.fuel or 100)
+  return string.format('快速鍵設定：起點 %s，目的地 %s，塞車 %d 公尺／%d 台，交通車 %d 台，回起點油量 %d%%，加完油自動塞車 %s',
+    cfg.start.name, cfg.dest and cfg.dest.name or '（無）', cfg.jamDist, cfg.jamCars, cfg.traffic, cfg.fuel or 100,
+    (cfg.autoJam or 0) > 0 and (cfg.autoJam .. ' 秒') or '關')
 end
 function M.getConfig() return cfg end
 
@@ -163,6 +214,8 @@ function M.onUpdate(dtReal)
   drawToast(dtReal)
   local ok, err = pcall(runJob, dtReal or 0)
   if not ok then toast('回起點出錯：' .. tostring(err), 6) job = nil end
+  local ok2, err2 = pcall(runAuto, dtReal or 0)
+  if not ok2 then toast('自動塞車出錯：' .. tostring(err2), 6) auto = nil end
 end
 
 return M
