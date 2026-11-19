@@ -207,7 +207,8 @@ class JamDetector:
     """塞車判斷（每秒呼叫 step 一次，回傳 "jam"／"jamClear"／None）。
 
     - 塞車：低於 jam_kmh 持續 jam_sec 秒，而且前方 40 公尺內至少 jam_cars 台同方向的車（停紅燈、路邊停車不算）；
-      完全沒有位置資料（只有 OutGauge）才只看車速；操作員放的塞車（bng jam on／Ctrl+Alt+1，pose 的 jamActive）放寬成 1 台
+      完全沒有位置資料（只有 OutGauge）才只看車速；操作員／自動放的塞車（bng jam on／Ctrl+Alt+1／加完油自動塞車，
+      pose 的 jamActive）不看前車數，慢 jam_sec 秒就算
     - 車流恢復：連續 clear_sec 秒都比 jam_kmh 快（車陣裡往前挪一下不算）
     - 冷卻：恢復後 cooldown 秒內不再通知「自然的」塞車（2026-11-19：挪一下就恢復 → 又塞住 → App 又問一次要不要
       通知對方）。操作員放的塞車不受冷卻限制，但同一次只通知一次
@@ -238,7 +239,8 @@ class JamDetector:
         forced = bool(fresh and fresh.get("jamActive"))
         if fresh and not forced:
             self.forced_done = False                 # 操作員解除了：下一次 jam on 可以再通知
-        if kmh < self.kmh:
+        # 操作員／自動放的塞車：車陣限速約 11 km/h，跟著車陣慢慢挪會剛好高過 10 km/h（2026-11-19 實測），門檻放寬到 15
+        if kmh < (max(self.kmh, 15.0) if forced else self.kmh):
             self.slow_since = self.slow_since or now
             self.fast_since = None
             slow = now - self.slow_since
@@ -248,12 +250,14 @@ class JamDetector:
                 if int(slow) % 15 == 0:
                     self.log(f"…慢速 {slow:.0f} 秒，但剛恢復 {now - self.cleared_at:.0f} 秒（冷卻 {self.cooldown:.0f} 秒內不再通知）")
                 return None
-            if ahead is None or ahead >= (1 if forced else self.cars):
+            # 2026-11-19 晚上：操作員／自動放的塞車（jamActive）不看前車數。1 小時測試 14 輪裡有 7 輪，
+            # 車子被塞車擋住慢了 1 分鐘以上，前方 40 公尺內卻數到 0 台（排隊的車停得比較遠），結果沒有通知副駕
+            if ahead is None or forced or ahead >= self.cars:
                 self.jam = True
                 if forced:
                     self.forced_done = True
                 why = "沒有位置資料，只看車速" if ahead is None else f"前方 {ahead} 台車" + ("（bng jam on）" if forced else "")
-                self.log(f"【塞車】已經 {slow:.0f} 秒低於 {self.kmh:.0f} km/h，{why} → 通知副駕")
+                self.log(f"【塞車】已經 {slow:.0f} 秒低於 {max(self.kmh, 15.0) if forced else self.kmh:.0f} km/h，{why} → 通知副駕")
                 return "jam"
             if int(slow) % 10 == 0:
                 self.log(f"…慢速 {slow:.0f} 秒，但前方只有 {ahead} 台車（紅燈或停車？）→ 不算塞車")
@@ -407,7 +411,7 @@ def main():
     ap.add_argument("--jam-sec", type=float, default=float(env("CODRIVER_JAM_SEC", "20")),
                     help="持續幾秒算塞車（預設 20，環境變數 CODRIVER_JAM_SEC）")
     ap.add_argument("--jam-cars", type=int, default=int(env("CODRIVER_JAM_CARS", "2")),
-                    help="前方 40 公尺內同方向至少幾台車才算塞車（遊戲有送位置時才用；bng jam on 時放寬成 1 台）")
+                    help="前方 40 公尺內同方向至少幾台車才算塞車（遊戲有送位置時才用；bng jam on／自動塞車時不看前車數）")
     ap.add_argument("--jam-clear-sec", type=float, default=float(env("CODRIVER_JAM_CLEAR_SEC", "10")),
                     help="車速連續幾秒高於 --jam-kmh 才算車流恢復（預設 10）")
     ap.add_argument("--jam-cooldown", type=float, default=float(env("CODRIVER_JAM_COOLDOWN", "600")),
@@ -424,7 +428,7 @@ def main():
     psock.bind((a.listen, a.port + 1))
     print(f"橋接啟動：BeamNG OutGauge {a.listen}:{a.port}、位置 {a.listen}:{a.port + 1} → 手機 {a.phone}（Ctrl+C 結束）")
     print(f"塞車判斷：低於 {a.jam_kmh:.0f} km/h 持續 {a.jam_sec:.0f} 秒，而且前方至少 {a.jam_cars} 台車"
-          f"（沒有位置資料時只看車速；bng jam on 時放寬成 1 台）")
+          f"（沒有位置資料時只看車速；bng jam on／自動塞車時不看前車數）")
     sources = set()          # 收過 OutGauge 的來源 IP（雙機模式時確認是 A 台送來的）
 
     game = Game(psock, a.port + 2, parse_addr(a.game, a.port + 2))
@@ -539,7 +543,11 @@ def main():
 
         # 塞車判斷 → 通知手機（手機只在導航中理會）
         fresh = pose if pose and now - pose["_at"] < 3.0 else None
-        event = jamdet.step(now, kmh, fresh)
+        # 2026-11-19 晚上：塞車判斷用位置封包的「真實車速」（車身移動速度）。OutGauge 的車速是輪速：
+        # 自動駕駛頂著前車時輪子空轉，OutGauge 一直報 21 km/h，車子其實沒動 → 橋接以為沒塞車
+        # 兩個速度取小的：空轉時 OutGauge 偏高、剛傳送／重置的那一兩秒位置封包的速度偏高，取小的兩種都不會漏判
+        move_kmh = fresh.get("speedKmh") if fresh else None
+        event = jamdet.step(now, kmh if move_kmh is None else min(kmh, move_kmh), fresh)
         ahead = fresh.get("carsAhead") if fresh else None        # 狀態列顯示用
         forced = bool(fresh and fresh.get("jamActive"))
         if event:
@@ -565,7 +573,8 @@ def main():
             gps = f"  GPS 剩 {fresh['gps']['remainingM'] / 1000:.1f} 公里"
         if ahead is not None:
             gps += f"  前車 {ahead}" + ("  [jam on]" if forced else "")
-        print(f"車速 {kmh:4d} km/h  油量 {pct:3d} %  {mark}{slow}{gps}")
+        real = f"（實際 {move_kmh:.0f}）" if move_kmh is not None and abs(move_kmh - kmh) >= 8 else ""   # 輪子空轉時看得出來
+        print(f"車速 {kmh:4d} km/h{real}  油量 {pct:3d} %  {mark}{slow}{gps}")
 
 
 if __name__ == "__main__":
