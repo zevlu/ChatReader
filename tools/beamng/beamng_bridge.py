@@ -395,7 +395,7 @@ def main():
                     help="前方 40 公尺內同方向至少幾台車才算塞車（遊戲有送位置時才用；bng jam on 時放寬成 1 台）")
     ap.add_argument("--jam-clear-sec", type=float, default=float(env("CODRIVER_JAM_CLEAR_SEC", "10")),
                     help="車速連續幾秒高於 --jam-kmh 才算車流恢復（預設 10）")
-    ap.add_argument("--jam-cooldown", type=float, default=float(env("CODRIVER_JAM_COOLDOWN", "180")),
+    ap.add_argument("--jam-cooldown", type=float, default=float(env("CODRIVER_JAM_COOLDOWN", "600")),
                     help="車流恢復後幾秒內不再通知新的塞車（預設 180；一輪展示只問一次）")
     ap.add_argument("--game", default=env("CODRIVER_GAME_ADDR", ""),
                     help="選填：遊戲台的位址（IP 或 IP:port），只在還沒收到位置封包時用；平常自動回到位置封包的來源")

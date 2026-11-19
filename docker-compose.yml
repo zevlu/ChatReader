@@ -72,7 +72,7 @@ services:
       - CODRIVER_JAM_SEC=${CODRIVER_JAM_SEC:-20}    # ……持續幾秒，
       - CODRIVER_JAM_CARS=${CODRIVER_JAM_CARS:-2}   # ……而且前方至少幾台車，就送 jam 給手機
       - CODRIVER_JAM_CLEAR_SEC=${CODRIVER_JAM_CLEAR_SEC:-10}   # 車速連續幾秒高於 JAM_KMH 才算車流恢復
-      - CODRIVER_JAM_COOLDOWN=${CODRIVER_JAM_COOLDOWN:-180}    # 恢復後幾秒內不再通知新的塞車（一輪只問一次）
+      - CODRIVER_JAM_COOLDOWN=${CODRIVER_JAM_COOLDOWN:-600}    # 恢復後幾秒內不再通知新的塞車（一輪只問一次）
       - CODRIVER_GAME_ADDR=${CODRIVER_GAME_ADDR:-}  # 選填：遊戲台位址（平常自動回到位置封包的來源，NAT 後面也通）
       - TZ=Asia/Taipei
     volumes:
