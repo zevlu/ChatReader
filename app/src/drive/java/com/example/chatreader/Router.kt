@@ -93,7 +93,7 @@ object Router {
 
     /** 用 DGX 上的模型（LlmClient，AiSource = DGX）判斷；失敗就改用關鍵字規則 */
     private fun decideDgx(task: String, t0: Long): Decision {
-        val name = "DGX ${AiSource.dgxModel}"
+        val name = "DGX 本機模型"   // 畫面上不顯示模型名稱
         return try {
             val content = LlmClient.chat(DGX_PROMPT, task, temperature = 0.0)
             Log.i(TAG, "DGX 路由回應：$content")

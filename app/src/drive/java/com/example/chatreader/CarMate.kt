@@ -97,6 +97,10 @@ object CarMate {
     private var fuelChecked = false
     private var lastWarnedLate = 0
     private var nearAsked = false
+    // 2026-11-19：「快到了」的時機。停靠點（加油站）還沒到、塞車還沒解除、這趟已經問過遲到，都先不問
+    private var webViaPending = false
+    private var jamActive = false
+    private var lateAskedThisTrip = false
     private var fatigueAsked = false
 
     // ── 閒聊 ──
@@ -422,7 +426,7 @@ object CarMate {
     fun testConnections(done: (String) -> Unit) {
         Thread {
             val src = AiSource.label()
-            AiSource.syncModel(app)?.let { m -> main.post { log("🔄 DGX 模型名稱自動更新為 $m") } }
+            AiSource.syncModel(app)?.let { m -> main.post { log("🔄 DGX 模型已自動對應").also { Log.i(TAG, "DGX 模型：$m") } } }
             val ai = if (!LlmClient.isConfigured()) "AI（$src）：未設定" else {
                 val t0 = System.currentTimeMillis()
                 runCatching { LlmClient.chat("只回答「OK」", "測試", temperature = 0.0) }.fold(
@@ -461,6 +465,9 @@ object CarMate {
         jamExtra = 0
         nearAsked = false
         fatigueAsked = false
+        webViaPending = false
+        jamActive = false
+        lateAskedThisTrip = false
         chatting = false
         log("🚗 上車，旅程開始（油量 $fuelPercent%）")
         if (!AssistantBubble.show()) log("⚠️ 無障礙服務沒開，🎤 泡泡出不來")
@@ -852,6 +859,7 @@ object CarMate {
      */
     private fun onJam() {
         if (!navigating) { log("🚗 車停了一陣子，但沒有在導航，不打擾"); return }
+        jamActive = true
         jamExtra += JAM_MIN
         log("🚦 BeamNG 偵測到塞車，預計多 $JAM_MIN 分鐘")
         update()
@@ -867,6 +875,7 @@ object CarMate {
             return
         }
         lastWarnedLate = maxOf(lastWarnedLate, late)                  // 導航檢查就不會再問一次
+        lateAskedThisTrip = true
         log("⏰ 塞車後預計 $newArrival 到，會晚 $late 分鐘，主動提醒")
         val where = a?.place?.let { "到$it" } ?: ""
         askYesNo("前面塞車了，照這個車流你大概會晚 $late 分鐘$where。要我幫你跟${friend}說一聲嗎？") { yes ->
@@ -1207,7 +1216,7 @@ object CarMate {
                 "late" -> lateCheck()
                 "reset" -> resetForDemo()
                 "jam" -> onJam()                                   // BeamNG 橋接程式：塞車了
-                "jamClear" -> if (navigating) log("🚗 BeamNG 車流恢復")
+                "jamClear" -> { jamActive = false; if (navigating) log("🚗 BeamNG 車流恢復") }
                 "navSay" -> {   // 2026-11-17：網頁車機（?unit=1）從遊戲 GPS 路線算出的轉彎提示，用手機唸
                     val t = j.optString("text").trim()
                     if (t.isNotEmpty() && navigating && pendingAnswer == null && !chatting) Voice.speak(t)
@@ -1262,6 +1271,9 @@ object CarMate {
         jamExtra = 0
         nearAsked = false
         fatigueAsked = false
+        webViaPending = false
+        jamActive = false
+        lateAskedThisTrip = false
         sendFriend = ""
         sendMsg = ""
         demoSending = false
@@ -1287,6 +1299,8 @@ object CarMate {
         webRouteAppt = a
         jamExtra = 0
         webNav = null
+        webViaPending = viaGas || via.isNotEmpty()
+        if (!startNow) { jamActive = false; lateAskedThisTrip = false }
         navReq = JSONObject()
             .put("id", navSeq).put("cmd", "plan").put("dest", a.place)
             .put("viaGas", viaGas).put("via", via).put("start", startNow)
@@ -1319,6 +1333,7 @@ object CarMate {
                 }
             }
             "via" -> {
+                webViaPending = false
                 val v = j.optString("via").ifEmpty { "加油站" }
                 log("📍 到達停靠點「$v」")
                 say(if (j.optBoolean("gas") || v.contains("加油")) "到${v}了，加完油繼續往${a?.place ?: "目的地"}開。"
@@ -1327,8 +1342,26 @@ object CarMate {
             "arrived" -> {
                 stopNavWatch()
                 navReq?.put("cmd", "done")
-                log("🏁 抵達「${j.optString("dest")}」")
-                say("到了！這裡就是${j.optString("dest").ifEmpty { a?.place ?: "目的地" }}。")
+                val dest = j.optString("dest")
+                log("🏁 抵達「$dest」")
+                if (dest.contains("加油") || a?.place?.contains("加油") == true) {
+                    // 2026-11-19：只導航到加油站（不是順路停靠）時，加完油主動問下一站
+                    val appt = appointment?.takeIf { it.place.isNotEmpty() && !it.place.contains("加油") }
+                    if (appt != null) {
+                        val who = if (appt.friend.isNotEmpty()) "跟${appt.friend}約的" else ""
+                        askYesNo("油加滿了！接下來要帶你去$who${appt.place}嗎？") { yes ->
+                            if (yes) startRoute(appt, viaGas = false) else say("好，要出發時跟我說要去哪裡。")
+                        }
+                    } else {
+                        say("油加滿了！接下來要去哪裡？") {
+                            Voice.listen("接下來要去哪裡？") { t ->
+                                if (t != null) onHeard(t) else AssistantBubble.say("沒聽到，要出發時叫我「副駕」或按 🎤")
+                            }
+                        }
+                    }
+                } else {
+                    say("到了！這裡就是${dest.ifEmpty { a?.place ?: "目的地" }}。")
+                }
             }
             "failed" -> say("我在地圖上找不到「${j.optString("dest")}」，換個地點試試？")
         }
@@ -1428,7 +1461,8 @@ object CarMate {
             }
             return
         }
-        if (!nearAsked && mins != null && mins <= 2 && a != null && a.friend.isNotEmpty()) {
+        if (!nearAsked && !webViaPending && !jamActive && !lateAskedThisTrip &&
+            mins != null && mins <= 2 && a != null && a.friend.isNotEmpty()) {
             nearAsked = true
             log("📍 剩 $mins 分鐘，主動問要不要通知")
             askYesNo("快到了，要跟${a.friend}說你快到了嗎？") { yes ->
@@ -1457,7 +1491,7 @@ object CarMate {
         put("agent", if (demoSending) "已填好（模擬），等你說「送出」" else MessengerAgent.history.lastOrNull() ?: "")
         put("station", station)
         put("jam", jamExtra)
-        put("ai", JSONObject().put("source", AiSource.label()).put("model", if (AiSource.useDgx) AiSource.dgxModel else ""))
+        put("ai", JSONObject().put("source", AiSource.label()))   // 2026-11-19：不送模型名稱給網頁
         gamePose?.takeIf { System.currentTimeMillis() - gamePoseAt < 5000 }?.let { put("pose", it) }
         gameRoute?.let { put("route", it) }
         if (demoChats) put("demoChats", DemoChats.toJson(app))

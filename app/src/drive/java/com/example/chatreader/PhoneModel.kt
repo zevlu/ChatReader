@@ -89,7 +89,7 @@ object CarControlBrain {
         var by = "手機模型"
         val content = if (AiSource.useDgx) {
             // 2026-11-19：AI 來源是 DGX 時，車輛控制也交給 DGX（不再試另一支手機，省掉連不上時等 3 秒）
-            by = "DGX ${AiSource.dgxModel}"
+            by = "DGX 本機模型"   // 畫面上不顯示模型名稱
             LlmClient.chat(PROMPT, text, temperature = 0.1)
         } else try {
             PhoneModel.chat(PROMPT, text, 0.1)

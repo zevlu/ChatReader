@@ -531,7 +531,7 @@ function renderPipe(s) {
   if (label && !label.includes('判斷中') && label !== pipeRoute) {
     pipeRoute = label;
     const where = label.includes('手機') ? '🚘 車上的模型'
-      : label.includes('DGX') ? '🖥 DGX 本機 AI' + (s.ai && s.ai.model ? `（${s.ai.model}）` : '')
+      : label.includes('DGX') ? '🖥 DGX 本機 AI'   // 2026-11-19：不顯示模型名稱
       : '☁️ 雲端 AI';
     cell('c2', `${where}\n${(s.routeDetail || '').replace(/・/g, ' ')}`, true);
   }
