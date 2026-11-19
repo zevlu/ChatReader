@@ -65,8 +65,10 @@ fi
 # 展示畫面乾淨：關掉 Earth 的除錯面板（要用時 bng panel）；固定白天（Earth 預設跟真實時間，晚上全黑）
 "$HERE/bng" panel off > /dev/null
 "$HERE/bng" day "${GAME_HOUR:-13}" > /dev/null
-# 操作員快速鍵（Ctrl+Alt+1～4）用的起點／目的地
+# 操作員快速鍵（Ctrl+Alt+1～5）用的起點／目的地／開場油量
 "$HERE/bng" hotkeys > /dev/null
+# 開場油量（START_FUEL=12：油不夠，App 會問要不要先去加油站）
+[ "${START_FUEL:-100}" -lt 100 ] 2>/dev/null && "$HERE/bng" fuel "$START_FUEL" > /dev/null
 
 # 7. OutGauge（codriver-dgx.conf 的 OUTGAUGE_HOST／PORT）
 #    RELAY_TO 有設定（B 台是公開 IP）：遊戲送到本機，codriver_relay.py 轉送到 B 台（遊戲只准送私有位址）

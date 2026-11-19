@@ -5,7 +5,7 @@
 --   {"t":"pose","lat":..,"lon":..,"heading":度,"speed":m/s,"ready":true,
 --    "gps":{"name":..,"lat":..,"lon":..,"remaining":公尺,"eta":秒,"planning":false} 或 沒有,
 --    "arrivedSeq":抵達次數,"arrivedName":最後抵達的地點,
---    "carsAhead":車頭前方 40 公尺內同方向的車數,"jamActive":bng jam on 中}   每秒一次；抵達時立刻多送一次
+--    "carsAhead":車頭前方 40 公尺內同方向的車數,"jamActive":bng jam on 中,"resetSeq":回起點次數}   每秒一次；抵達時立刻多送一次
 --   {"t":"route","version":..,"dist":公尺,"dur":秒,"points":[[lat,lon],...]}   路線改變時、之後每 10 秒重送
 -- 收：port = OutGauge port + 2（預設 4446），只接受這兩種，而且只接受 OutGauge 位址或本機送來的：
 --   {"cmd":"gps","lat":..,"lon":..,"name":".."}   {"cmd":"gpsClear"}
@@ -97,6 +97,8 @@ local function sendPose()
   local pkt = { t = 'pose', lat = p.lat, lon = p.lon, heading = p.heading, speed = p.speed,
                 ready = okR and ready == true, arrivedSeq = arrivedSeq, arrivedName = arrivedName,
                 carsAhead = okC and ahead or nil, jamActive = jam and jam.isActive() or false }
+  local hk = rawget(_G, 'codriverHotkeys')
+  pkt.resetSeq = hk and hk.resetSeq or 0    -- 回起點（Ctrl+Alt+2／bng start）的次數
   if okG and g then
     pkt.gps = { name = g.name, lat = g.lat, lon = g.lon, remaining = g.remaining, eta = g.eta, planning = g.planning }
   end

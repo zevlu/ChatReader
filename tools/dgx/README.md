@@ -107,13 +107,34 @@ tools/dgx/bng                                # 列出所有操作指令
 
 | 按鍵 | 作用 |
 |---|---|
-| **Ctrl+Alt+1** | 塞車開／關（開：導航路線前方約 450 公尺，離終點太近時自動縮短） |
-| **Ctrl+Alt+2** | 回起點：停自動駕駛、清標記與塞車 → 傳送到 `START_PLACE` → GPS 設到 `START_GPS` → 車頭對準路線（約 20 秒） |
+| **Ctrl+Alt+1** | 塞車開／關（開：導航路線前方 `START_JAM_DIST` 公尺，展示設 200；離終點太近時自動縮短）。加油站版平常不用按：加完油會自動塞車（`AUTO_JAM_SEC`） |
+| **Ctrl+Alt+2** | 回起點：停自動駕駛、清標記與塞車 → 傳送到 `START_PLACE` → GPS 設到 `START_GPS` → 車頭對準路線（約 20 秒）。同時手機 App 重置（見下面「一鍵重置」） |
 | **Ctrl+Alt+3** | 把車放回最近的道路 |
 | **Ctrl+Alt+4** | 交通車重新分散到附近；沒有交通車時叫出 `START_TRAFFIC` 台 |
 | **Ctrl+Alt+5** | BeamNG.Earth 自動駕駛 開／關（沿 GPS 路線自己開；關掉換駕駛手動，`bng auto on|off` 也可以） |
 
 起點、目的地由 `start_codriver.sh` 執行 `bng hotkeys` 從 `codriver-dgx.conf` 帶進遊戲。按鍵定義在 mod 的 `lua/ge/extensions/core/input/actions/codriver.json`，預設綁定在 `settings/inputmaps/keyboard_codriver.json`（BeamNG 原本沒用到 Ctrl+Alt+數字）。操作員小抄：[OPERATOR_CHEATSHEET.md](OPERATOR_CHEATSHEET.md)。
+
+### 一鍵重置、adb 自動重連、健康檢查（11/19 晚上）
+
+- **一鍵重置**：Ctrl+Alt+2（或 `bng start`）會讓 `codriverHotkeys.resetSeq` +1，`codriverPose` 把它放進位置封包（`resetSeq`）。
+  - 橋接看到它變多，就 POST `{"type":"action","name":"reset"}` 給手機。App 執行 `resetForDemo()`，清掉約定、導航、對話，下一位來試的人從頭開始。
+  - 橋接也會清掉自己的兩段導航狀態和塞車冷卻。
+  - 橋接剛啟動時，第一次看到的 `resetSeq` 只記下來，不會重置。
+- **adb 自動重連**（手機 USB 接 B 台時）：`tools/dgx/adb_keepalive.sh` 每 10 秒檢查一次。手機在、但少了 `adb forward tcp:8765` 或 `adb reverse tcp:8300`，就自動補上。
+  - log 在 `~/codriver-dgx/logs/adb_keepalive.log`，只記變化。
+  - 手機不在這台時什麼都不做，所以不會跟筆電的 SSH 通道搶 8765。
+  - 常駐（使用者服務，不用 sudo）：
+    ```bash
+    mkdir -p ~/.config/systemd/user && cp tools/dgx/codriver-adb-keepalive.service ~/.config/systemd/user/
+    systemctl --user daemon-reload && systemctl --user enable --now codriver-adb-keepalive
+    ```
+    使用者服務只在 nkust 有登入（桌面或 SSH）時跑。要開機就跑，需要 `sudo loginctl enable-linger nkust`（要問管理者）。
+  - 手機接 Windows 筆電時用 `tools/dgx/adb_keepalive.ps1`：`powershell -ExecutionPolicy Bypass -File adb_keepalive.ps1`。
+- **健康檢查**：`tools/dgx/codriver_check.sh`，A 台、B 台都可以執行，每項印 ✅／❌，❌ 下面附一句怎麼修。
+  - A 台：BeamNG、OutGauge、FPS、轉送程式（最近 30 秒的封包數）；再 SSH 到 B 台（`RELAY_TO`）跑 B 台的檢查。
+  - B 台：`codriver-llm` healthy 而且 `/v1/models` 有模型；橋接有收到 OutGauge 和位置；橋接連得到手機；adb forward／reverse，或確認 8765 是筆電的 SSH 通道；手機 `GET /state` 有回應。
+  - 結束代碼 = ❌ 的數量（0 = 全部正常）。
 
 ### 為什麼沒有遊戲選單
 
@@ -130,19 +151,27 @@ BeamNG 內建的 CEF（Chromium 150）在 FEX 轉譯下 renderer 會 segfault。
 
 ---
 
-### 展示路線（11/17 定案）
+### 展示路線（11/19 改成加油站版，11/19 上午換起點）
 
 | 項目 | 內容 |
 |---|---|
-| 起點 | 清豐二路起點（22.735697, 120.329616） |
-| 終點 | 楠梓車站麥當勞（22.727135, 120.326549），約 1.5 公里、3 分鐘 |
-| 路線 | 清豐二路 →左轉 東寧路 →右轉 旗楠路 →直行 楠梓新路 →左轉 建楠路 →左轉 建楠路164巷 |
+| 起點 | **朝新路起點**（22.725138, 120.324305，OSRM 吸附在朝新路上），開場油量 12%（`START_FUEL`）；`START_GPS=楠都加油站`，回起點時車頭就朝第一段 |
+| 停靠點 | **楠都加油站**（台灣中油，楠陽路，22.723731, 120.330166；OpenStreetMap）：起點 → 加油站 0.72 公里（朝新路 → 朝仁路 → 楠陽路），約 90 秒 |
+| 終點 | 楠梓車站麥當勞（22.727135, 120.326549）：加油站 → 麥當勞 0.67 公里、約 1.2 分鐘 |
+| 一輪 | 約 5 分鐘（11/19 實測 274 秒，含塞車 90 秒；自動駕駛，不含上車對話） |
 
-- `start_codriver.sh` 預設就是這條路線，並叫出 10 台交通車。
-- 塞車：開出去後執行 `bng jam on 450`，塞車點在剛右轉進旗楠路的地方。
-- 抵達：剩 350 公尺時，Earth 判定抵達的位置右側路緣會出現 3 個三角錐和一台黃色的車。抵達時畫面上方顯示「【已抵達】…」（imgui；`api.notify` 走 CEF，-noui 看不到）。
+- App 導航到約定地點、`viaGas: true` → 橋接把遊戲 GPS 先設到加油站（第一段）；遊戲回報抵達後，再設到麥當勞（第二段）。
+- 手機 pose 的 `gps` 多了 `leg`：`"via"`（第一段，另有 `afterViaM`、`afterViaS` 是加油站 → 麥當勞的距離和秒數）／`"final"`（第二段）。抵達加油站後 `leg` 會再維持 `"via"` 3 秒才換成 `"final"`，車機網頁靠這個判斷「這次抵達是停靠點」。
+- 加油站 → 麥當勞的距離和秒數：橋接先問 OSRM，沒網路時用 `tools/beamng/route_legs.json`（已存好展示路線這一段），都沒有就用直線距離估。
+- 抵達加油站時遊戲自動把油加滿（畫面顯示「【加油】楠都加油站，油加滿了」），App 從 OutGauge 看到 100%。加油站不放三角錐和黃車。
+- 還沒到加油站前，車子被重置（R、自動駕駛救援、回起點）時 BeamNG 會把油加滿；`codriverDest` 會再設回 12%。
+- **自動塞車**（`AUTO_JAM_SEC=90`）：抵達加油站後，等遊戲 GPS 換到第二段、路線算好，再等 3 秒，就在前方 `START_JAM_DIST`（200）公尺放塞車，90 秒後自動解除。操作員按 Ctrl+Alt+1（提早解除）或 Ctrl+Alt+2 會取消自動塞車。`AUTO_JAM_SEC=0` = 照舊手動按。
+- 塞車期間把 Earth 自動駕駛的「30 秒沒前進就往前放 150 公尺」暫時關掉（`codriverJam` 改 `AUTO_NOPROGRESS_S`，解除時還原），車子才不會被直接放進車陣裡。
+- **為什麼換起點**：舊起點（清豐二路）的第一段 2.3 公里，會先經過楠梓車站前的路口（交通車常在那裡撞成一團、擋住路口），再往南繞到加油站，一輪要 8 分鐘；第二段只有 0.67 公里，塞車放 450 公尺幾乎到終點才看得到。改走大社中山路 → 大社加油站也試過：Earth 的大社中山路很窄、建築物蓋到車道上，車子會撞上去，不能用。
+- 抵達麥當勞：剩 350 公尺時，右側路緣出現 3 個三角錐，黃車一半停在人行道上。抵達時畫面上方顯示「【已抵達】…」。
 - 橋接的塞車條件：低速 20 秒，而且前方 40 公尺內至少 2 台同方向的車（`CODRIVER_JAM_CARS`）；`jam on` 中放寬成 1 台。三角錐、標記車不算前車。
-- 實測：高雄＋10 台交通車＋塞車，FPS 平均 59.4（最低 43.8），GPU 37／42 W。
+- **注意**：加油站東邊的小路（楠陽路往東繞回的那一段）地形資料有土堆，交通車會翻車。自動駕駛在加油站出發時如果錯過左轉，可能繞進去卡住。真人照箭頭開不會經過那裡。
+- 原本不加油的版本（約 1.5 公里、3 分鐘）：`START_FUEL=100`，App 就不會問要不要先去加油站。
 
 ### 沒有網路時的導航路線（路線快取）
 

@@ -14,6 +14,31 @@ local vecY = vec3(0, 1, 0)
 
 local function api() return rawget(_G, 'beamngEarth_api') end
 
+-- 加油站（名稱有「加油」）：不放三角錐和黃車，抵達時把玩家的油加滿（2026-11-19：上車油不夠 → 先去加油站）
+local function isGas(name) return name ~= nil and tostring(name):find('加油', 1, true) ~= nil end
+
+-- 玩家車子的油量設成 ratio（0～1）。OutGauge 的油量跟著變，橋接 2 秒後轉給手機。
+-- ratio < 1（展示開場的「油不夠」）會記住：車子被重置（R、自動駕駛救援、回起點）時 BeamNG 會把油加滿，
+-- 這裡再設回去，直到真的開到加油站加滿為止
+local fuelTarget, fuelPending = nil, nil
+local function applyFuel(ratio)
+  local pv = be:getPlayerVehicle(0)
+  if not pv then return false end
+  pv:queueLuaCommand(string.format("for _, s in pairs(energyStorage.getStorages()) do if s.type == 'fuelTank' then s:setRemainingRatio(%.3f) end end", ratio))
+  return true
+end
+function M.setFuel(ratio)
+  ratio = math.max(0, math.min(1, tonumber(ratio) or 1))
+  fuelTarget = ratio < 1 and ratio or nil
+  if not applyFuel(ratio) then return '沒有玩家的車' end
+  log('I', 'codriverDest', string.format('CODRIVER_FUEL set %.0f%%', ratio * 100))
+  return string.format('油量設成 %.0f%%', ratio * 100)
+end
+function M.onVehicleResetted(vid)
+  local pv = be:getPlayerVehicle(0)
+  if fuelTarget and pv and pv:getID() == vid then fuelPending = 0.5 end   -- 重置完成後再設（同一幀設會被蓋掉）
+end
+
 local function anchor()
   local c = rawget(_G, 'beamngEarth_core')
   local ok, st = pcall(function() return c and c._state and c._state() end)
@@ -126,6 +151,15 @@ end
 
 function M.onUpdate(dtReal)
   drawBanner(dtReal)
+  if fuelPending then
+    fuelPending = fuelPending - (dtReal or 0)
+    if fuelPending <= 0 then
+      fuelPending = nil
+      if fuelTarget and applyFuel(fuelTarget) then
+        log('I', 'codriverDest', string.format('CODRIVER_FUEL reset → back to %.0f%%', fuelTarget * 100))
+      end
+    end
+  end
   acc = acc + dtReal
   if acc < 1 then return end
   acc = 0
@@ -138,7 +172,7 @@ function M.onUpdate(dtReal)
       if placedKey and placedKey ~= key then removeMarkers() end
       lastDest = { key = key, lat = g.lat, lon = g.lon, name = g.name }
     end
-    if placedKey ~= key and g.remaining and g.remaining < APPROACH_M then
+    if placedKey ~= key and g.remaining and g.remaining < APPROACH_M and not isGas(lastDest.name) then
       placeMarkers(lastDest)
     end
   end
@@ -148,6 +182,11 @@ end
 function M.onBeamNGEarthRouteArrived(info)
   local A = api()
   local name = info and info.name or (lastDest and lastDest.name) or '目的地'
+  if isGas(name) then
+    M.setFuel(1)
+    bannerText, bannerLeft = '【加油】' .. tostring(name) .. '，油加滿了', 8
+    return
+  end
   bannerText, bannerLeft = '【已抵達】' .. tostring(name), 12      -- 畫面上方大字 12 秒
   if A and A.notify then pcall(A.notify, '🏁 已抵達：' .. tostring(name), 10) end         -- （有 CEF 時也顯示）
 end

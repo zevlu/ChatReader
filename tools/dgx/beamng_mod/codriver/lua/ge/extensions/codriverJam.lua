@@ -100,7 +100,23 @@ local function trafficIds()
   return ids
 end
 
+-- 2026-11-19：塞車時 Earth 自動駕駛看到「30 秒沒前進」會把車往前放 150 公尺（可能直接放進車陣裡）。
+-- 塞車期間把這個檢查關掉（秒數調很大），解除時還原
+local NOPROGRESS_OFF_S = 3600
+local savedNoProgress = nil
+local function holdAutodrive(on)
+  local ok, gps = pcall(require, 'beamngEarth/gps')
+  if not ok or type(gps) ~= 'table' or not gps.AUTO_NOPROGRESS_S then return end
+  if on then
+    if not savedNoProgress then savedNoProgress = gps.AUTO_NOPROGRESS_S end
+    gps.AUTO_NOPROGRESS_S = NOPROGRESS_OFF_S
+  elseif savedNoProgress then
+    gps.AUTO_NOPROGRESS_S, savedNoProgress = savedNoProgress, nil
+  end
+end
+
 function M.off()
+  holdAutodrive(false)
   for _, id in ipairs(brokenIds) do
     local o = be:getObjectByID(id)
     if o then o:delete() end
@@ -166,6 +182,7 @@ function M.on(dist, n)
     end
   end
   active = true
+  holdAutodrive(true)
   log('I', 'codriverJam', string.format('CODRIVER_JAM on at %.0f m (%s), %d lanes blocked, queued %d', dist, usingGps and 'GPS route' or 'straight ahead', #lanes, moved))
   return string.format('jam on：前方 %d 公尺（%s），擋住同方向 %d 個車道，%d 台交通車排在後面，車流限速約 11 km/h',
     dist, usingGps and '沿導航路線' or '沒有導航，車頭正前方', #lanes, moved)

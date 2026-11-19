@@ -19,6 +19,8 @@ table:first-of-type td:nth-child(-n+2), th { white-space: nowrap; }
 table:nth-of-type(-n+3) td:first-child { white-space: nowrap; }
 /* 正面：開場、快速鍵、常用指令；反面：出錯怎麼辦、不要做（雙面列印一張 A4） */
 h2:nth-of-type(4) { break-before: page; }
+/* 反面字小一點，才放得下一張 */
+@media print { h2:nth-of-type(4) ~ * { font-size: 9.1pt; } h2:nth-of-type(4) ~ * code { font-size: 8.4pt; } }
 @media screen { body { padding: 10mm; } h2:nth-of-type(4) { margin-top: 12mm; } }
 </style></head><body>
 <h1>CoDriver 展示操作員小抄（A 台遊戲／B 台車機）</h1>
@@ -51,7 +53,7 @@ h2:nth-of-type(4) { break-before: page; }
 <tr>
 <td>3</td>
 <td>B 台</td>
-<td>手機 USB 接上 → <code>adb forward tcp:8765 tcp:8765</code>、<code>adb reverse tcp:8300 tcp:8300</code> → 開 CoDriver</td>
+<td>手機 USB 接上 → <code>systemctl --user start codriver-adb-keepalive</code>（自動補 adb forward／reverse，斷線重插也會補）→ 開 CoDriver</td>
 <td><code>docker compose logs --tail 3 codriver-bridge</code> 不再出現「✗ 手機沒連上」</td>
 </tr>
 <tr>
@@ -72,8 +74,69 @@ h2:nth-of-type(4) { break-before: page; }
 <td>Chromium 開 <code>http://localhost:8765/?unit=1</code></td>
 <td>地圖上有車子的位置</td>
 </tr>
+<tr>
+<td>7</td>
+<td>A 台</td>
+<td><code>tools/dgx/codriver_check.sh</code>（也會 SSH 到 B 台檢查）</td>
+<td>最後一行「全部正常 ✅」；❌ 的項目下面有怎麼修</td>
+</tr>
 </tbody>
 </table>
+<p><strong><code>docker compose</code> 只在 B 台執行</strong>；A 台只跑 <code>start_codriver.sh</code>（A 台的轉送程式已經佔住 4444/4445）。</p>
+<h2>展示流程（每一輪都走加油站版，約 5 分鐘）</h2>
+<p>路線：朝新路起點 →（0.7 km）楠都加油站 →（0.67 km）楠梓車站麥當勞。<strong>塞車是自動的</strong>，操作員不用按 Ctrl+Alt+1。</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>駕駛／CoDriver</th>
+<th>操作員</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>上車：副駕說油量 12% 有點低，問要去哪裡</td>
+<td>每輪開始前按 <strong>Ctrl+Alt+2</strong>（回起點、油量 12%、箭頭指向加油站，<strong>手機 App 也會一起重置</strong>）</td>
+</tr>
+<tr>
+<td>2～3</td>
+<td>「帶我去跟孟澤約的地方」→ 副駕找到約定、問要不要導航 →「好」</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>副駕問要不要先去順路的加油站 →「好」</td>
+<td>按 <strong>Ctrl+Alt+5</strong> 開自動駕駛（或駕駛自己開）</td>
+</tr>
+<tr>
+<td>5</td>
+<td>往加油站（約 1.5 分鐘）</td>
+<td>—</td>
+</tr>
+<tr>
+<td>6</td>
+<td>到加油站：自動加滿（100%）、副駕說「到加油站了」，箭頭換成麥當勞</td>
+<td>—</td>
+</tr>
+<tr>
+<td>7</td>
+<td>開出加油站：前方 200 公尺<strong>自動塞車</strong></td>
+<td>沒出現車陣才按 <strong>Ctrl+Alt+1</strong></td>
+</tr>
+<tr>
+<td>8～9</td>
+<td>停 20 秒以上，副駕問要不要通知孟澤 →「送出」</td>
+<td>塞車 90 秒後<strong>自動解除</strong>；要提早解除按 Ctrl+Alt+1</td>
+</tr>
+<tr>
+<td>10</td>
+<td>抵達麥當勞：三角錐、黃車、「【已抵達】」</td>
+<td>下一輪按 <strong>Ctrl+Alt+2</strong></td>
+</tr>
+</tbody>
+</table>
+<p>不加油的短版（約 3 分鐘）：A 台 <code>bng fuel 100</code>。沒有經過加油站就不會自動塞車，出發後要自己按 Ctrl+Alt+1。</p>
 <h2>遊戲內快速鍵（BeamNG 視窗在前景時）</h2>
 <table>
 <thead>
@@ -87,11 +150,11 @@ h2:nth-of-type(4) { break-before: page; }
 <tr>
 <td><strong>Ctrl+Alt+1</strong></td>
 <td>塞車 開／關</td>
-<td>開到東寧路右轉旗楠路前按「開」；CoDriver 問完、駕駛說「送出」後再按一次解除</td>
+<td>平常不用按（加完油會自動塞車 90 秒）；自動塞車沒出現、或要提早解除時才按</td>
 </tr>
 <tr>
 <td><strong>Ctrl+Alt+2</strong></td>
-<td>回起點（清豐二路，GPS 重設到楠梓車站麥當勞，車頭對準路線）</td>
+<td>回起點（朝新路，油量 12%，GPS 先指向楠都加油站）＋手機 App 重置（清掉約定、導航、對話）</td>
 <td>每一輪展示開始前；約 20 秒</td>
 </tr>
 <tr>
@@ -123,7 +186,11 @@ h2:nth-of-type(4) { break-before: page; }
 <tbody>
 <tr>
 <td><code>bng start</code></td>
-<td>回起點（和 Ctrl+Alt+2 一樣，會印出結果）</td>
+<td>回起點（和 Ctrl+Alt+2 一樣，會印出結果；油量設回 12%）</td>
+</tr>
+<tr>
+<td><code>bng fuel 12</code> ／ <code>bng fuel</code></td>
+<td>油量設成 12%（App 會問要不要先去加油站）／加滿</td>
 </tr>
 <tr>
 <td><code>bng auto on</code> ／ <code>bng auto off</code></td>
@@ -200,9 +267,14 @@ h2:nth-of-type(4) { break-before: page; }
 <td>有錯就 <code>docker compose restart codriver-llm</code>（約 3.5 分鐘）；手機那邊重做 <code>adb reverse tcp:8300 tcp:8300</code></td>
 </tr>
 <tr>
+<td>不知道哪裡壞</td>
+<td>A 台 <code>tools/dgx/codriver_check.sh</code>，照 ❌ 下面那行修</td>
+<td>—</td>
+</tr>
+<tr>
 <td>手機斷線</td>
-<td>重新插 USB，再執行一次 <code>adb forward …</code>、<code>adb reverse …</code></td>
-<td>重開 CoDriver App</td>
+<td>重新插 USB；有開 adb_keepalive 會在 10 秒內自動補好 forward／reverse</td>
+<td>手動 <code>adb forward …</code>、<code>adb reverse …</code>；重開 CoDriver App</td>
 </tr>
 <tr>
 <td>遊戲畫面當住或關掉</td>
@@ -221,6 +293,7 @@ h2:nth-of-type(4) { break-before: page; }
 <li>不要按 BeamNG.Earth 的「Update now」（版本凍結在 1.9.1-beta）。</li>
 <li>不要在 Steam 按 STOP；關遊戲用 <code>stop_codriver.sh</code>。</li>
 <li>Steam 同一個帳號同時只能在一台跑遊戲：要換 C 台備援，先關 A 台的遊戲。</li>
+<li>不要在 A 台執行 <code>docker compose up</code>（橋接和 AI 都在 B 台）。誤開了：A 台 <code>docker compose rm -sf codriver-bridge</code>，轉送不受影響。</li>
 <li>不要停或刪除別組（ai-truth-lab）的容器。</li>
 </ul>
 </body></html>
