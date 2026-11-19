@@ -9,7 +9,7 @@
 local M = {}
 
 local cfg = {
-  start = { lat = 22.735697, lon = 120.329616, name = '清豐二路起點' },
+  start = { lat = 22.725138, lon = 120.324305, name = '朝新路起點' },
   dest  = { lat = 22.727135, lon = 120.326549, name = '楠梓車站麥當勞' },
   jamDist = 450, jamCars = 5, traffic = 10,
   fuel = 12,                       -- 回起點時的油量（%；展示開場「油不夠」，100 = 不改）

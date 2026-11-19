@@ -207,7 +207,7 @@ class JamDetector:
     """塞車判斷（每秒呼叫 step 一次，回傳 "jam"／"jamClear"／None）。
 
     - 塞車：低於 jam_kmh 持續 jam_sec 秒，而且前方 40 公尺內至少 jam_cars 台同方向的車（停紅燈、路邊停車不算）；
-      沒有位置資料就只看車速；操作員放的塞車（bng jam on／Ctrl+Alt+1，pose 的 jamActive）放寬成 1 台
+      完全沒有位置資料（只有 OutGauge）才只看車速；操作員放的塞車（bng jam on／Ctrl+Alt+1，pose 的 jamActive）放寬成 1 台
     - 車流恢復：連續 clear_sec 秒都比 jam_kmh 快（車陣裡往前挪一下不算）
     - 冷卻：恢復後 cooldown 秒內不再通知「自然的」塞車（2026-11-19：挪一下就恢復 → 又塞住 → App 又問一次要不要
       通知對方）。操作員放的塞車不受冷卻限制，但同一次只通知一次
@@ -218,9 +218,17 @@ class JamDetector:
         self.jam = False
         self.slow_since = self.fast_since = self.cleared_at = None
         self.forced_done = False
+        self.pose_seen = False
 
     def step(self, now, kmh, fresh):
         ahead = fresh.get("carsAhead") if fresh else None
+        if fresh:
+            self.pose_seen = True
+        elif self.pose_seen and not self.jam:
+            # 2026-11-19：車停在起點 13 分鐘後，位置資料斷了幾秒（回起點／瞬移）→ 只看車速就誤報「已經 818 秒」。
+            # 收過位置資料的話，斷掉時先不判斷、慢速也重算；只看車速的備案留給完全沒有位置資料的情況
+            self.slow_since = None
+            return None
         forced = bool(fresh and fresh.get("jamActive"))
         if fresh and not forced:
             self.forced_done = False                 # 操作員解除了：下一次 jam on 可以再通知

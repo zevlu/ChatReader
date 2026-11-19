@@ -59,10 +59,15 @@ send() {
 #   楠梓車站麥當勞、高雄大學路：OpenStreetMap（Nominatim）查到的座標，2026-11-17
 #   清豐二路起點：展示路線起點（OSRM 吸附在道路上）；到麥當勞 1.48 公里、約 3 分鐘：
 #     清豐二路 →左轉 東寧路 →右轉 旗楠路 →直行 楠梓新路 →左轉 建楠路 →左轉 建楠路164巷
+#   朝新路起點 → 楠都加油站（朝新路 → 楠陽路，0.72 公里）→ 鳳楠路 → 建楠路 → 楠梓車站麥當勞（0.67 公里）：
+#     2026-11-19 加油站版展示路線（OSRM 吸附在道路上）；起點在楠梓車站前路口（交通車常撞成一團）的南邊，不會經過；
+#     這幾條路 2 小時測試開過 15 輪都順（大社中山路試過：Earth 的路很窄、建築物蓋到車道上，不能用）
 #   其他：概略座標
 declare -A PLACES=(
   [楠梓車站麥當勞]="22.727135 120.326549"
   [清豐二路起點]="22.735697 120.329616"
+  [朝新路起點]="22.725138 120.324305"
+  [楠都加油站]="22.723731 120.330166"
   [高雄大學路]="22.730324 120.284838"
   [高雄車站]="22.6394 120.3025"
   [高科大建工]="22.6505 120.3285"
@@ -122,7 +127,7 @@ case "$1" in
     s=$(ll "$START_PLACE"); d=$(ll "$START_GPS")
     [ -n "$s" ] || { echo "START_PLACE「$START_PLACE」不在 PLACES 裡，也不是「緯度 經度」"; exit 1; }
     if [ -n "$d" ]; then dest="{lat=${d% *}, lon=${d#* }, name='$START_GPS'}"; else dest=false; fi
-    send "if not codriverHotkeys then return '快速鍵沒有載入（mod 要更新）' end return codriverHotkeys.config({start={lat=${s% *}, lon=${s#* }, name='$START_PLACE'}, dest=$dest, traffic=${START_TRAFFIC:-10}, fuel=${START_FUEL:-100}})" ;;
+    send "if not codriverHotkeys then return '快速鍵沒有載入（mod 要更新）' end return codriverHotkeys.config({start={lat=${s% *}, lon=${s#* }, name='$START_PLACE'}, dest=$dest, traffic=${START_TRAFFIC:-10}, jamDist=${START_JAM_DIST:-450}, fuel=${START_FUEL:-100}})" ;;
   start)
     send "require('beamngEarth/gps').setAutodrive(false) codriverDest.clear() if ${START_FUEL:-100} < 100 then codriverDest.setFuel(${START_FUEL:-100} / 100) end return codriverJam.off()" > /dev/null
     "$0" place "$START_PLACE" || exit 1
