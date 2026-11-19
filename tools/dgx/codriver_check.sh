@@ -40,9 +40,9 @@ check_b() {
   local h; h=$(docker inspect -f '{{.State.Health.Status}}' codriver-llm 2>/dev/null)
   local port; port=$(grep -s '^CODRIVER_LLM_PORT=' .env | cut -d= -f2); port=${port:-8300}
   local models; models=$(curl -s -m 5 "http://127.0.0.1:$port/v1/models" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-  if [ "$h" = healthy ] && [ -n "$models" ]; then ok "codriver-llm healthy，模型 $models"
+  if [ "$h" = healthy ] && [ -n "$models" ]; then ok "codriver-llm healthy，本機大型語言模型有回應"
   elif [ -z "$h" ]; then bad "codriver-llm 容器不存在" "docker compose up -d（第一次啟動約 5 分鐘）"
-  else bad "codriver-llm 狀態 $h，/v1/models 回應：${models:-沒有}" "剛啟動就等 5 分鐘；不然 docker compose restart codriver-llm（約 3.5 分鐘）"; fi
+  else bad "codriver-llm 狀態 $h，/v1/models $([ -n "$models" ] && echo 有模型 || echo 沒有回應)" "剛啟動就等 5 分鐘；不然 docker compose restart codriver-llm（約 3.5 分鐘）"; fi
   # 橋接
   local bs; bs=$(docker inspect -f '{{.State.Status}}' codriver-bridge 2>/dev/null)
   if [ "$bs" != running ]; then bad "codriver-bridge 沒在跑（${bs:-不存在}）" "docker compose up -d codriver-bridge"
@@ -65,7 +65,7 @@ check_b() {
   elif ss -ltn 2>/dev/null | grep -q '127.0.0.1:8765 '; then
     info "手機沒接在這台；8765 有人在聽（應該是筆電的 SSH 通道 -R 8765），adb 在筆電那邊設"
   else
-    bad "手機沒接在這台，也沒有 SSH 通道" "手機 USB 插這台 → adb forward tcp:8765 tcp:8765、adb reverse tcp:8300 tcp:8300；或筆電開通道 ssh -N -L 8300:127.0.0.1:8300 -R 8765:127.0.0.1:8765 nkust@<B 台 IP>"
+    bad "手機沒接在這台，也沒有 SSH 通道" "手機 USB 插這台 → adb forward tcp:8765 tcp:8765、adb reverse tcp:8300 tcp:8300；或筆電開通道 ssh -N -L 8300:127.0.0.1:8300 -R 8765:127.0.0.1:8765 nkust@<這台的 IP>"
   fi
   # 手機 App
   local state; state=$(curl -s -m 3 http://127.0.0.1:8765/state)

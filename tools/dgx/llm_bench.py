@@ -106,7 +106,7 @@ def main():
         req = urllib.request.Request(a.base.rstrip("/") + "/models", headers={"Authorization": "Bearer " + (a.key or "none")})
         with urllib.request.urlopen(req, timeout=10) as r:
             a.model = json.loads(r.read().decode("utf-8"))["data"][0]["id"]
-    print("模型：%s（%s）" % (a.model, a.base))
+    print("模型：本機大型語言模型（%s）" % a.base)      # 2026-11-19：畫面上不顯示模型名稱（實際 id 在 .env／docker-compose.yml）
     system = load_router_prompt(a.prompt_file)
     print("提示詞：DriveBrain.kt ROUTER_PROMPT（%d 字）" % len(system))
 

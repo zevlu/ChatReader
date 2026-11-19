@@ -5,12 +5,13 @@
 #   → 楠都加油站（自動加滿、GPS 換成麥當勞）→ 遊戲自動塞車（AUTO_JAM_SEC，預設 90 秒後自動解除）
 #   → 抵達麥當勞
 # 不手動放塞車：要驗證的就是「加完油自動塞車」。
-# 用法：gas_story_round.sh <B 台 IP> <輪次>      結果一行一行印出來（時間、事件）
+# 用法：gas_story_round.sh <B 台 IP｜local> <輪次>      結果一行一行印出來（時間、事件）
 B_HOST=$1; R=${2:-1}
 HERE=$(dirname "$(readlink -f "$0")")
 BNG=$HERE/bng
 say() { echo "[$(date +%T)] 第 $R 輪：$*"; }
-bstate() { ssh -o BatchMode=yes "nkust@$B_HOST" "$@"; }
+# B 台 IP 寫 local = 單機模式（假手機也在這台）
+bstate() { if [ "$B_HOST" = local ]; then bash -c "$*"; else ssh -o BatchMode=yes "nkust@$B_HOST" "$@"; fi; }
 jam() { "$BNG" lua "return tostring(codriverJam and codriverJam.isActive())" 2>/dev/null | tail -1; }
 t0=$(date +%s)
 "$BNG" start > /dev/null || { say "回起點失敗"; exit 1; }

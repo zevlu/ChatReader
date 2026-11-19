@@ -136,6 +136,19 @@ tools/dgx/bng                                # 列出所有操作指令
   - B 台：`codriver-llm` healthy 而且 `/v1/models` 有模型；橋接有收到 OutGauge 和位置；橋接連得到手機；adb forward／reverse，或確認 8765 是筆電的 SSH 通道；手機 `GET /state` 有回應。
   - 結束代碼 = ❌ 的數量（0 = 全部正常）。
 
+### 單機備案、小抄 PDF（11/19 晚上）
+
+- **單機備案**：`tools/dgx/switch_mode.sh single|dual`，在 A 台執行；不給參數只顯示現在的模式。
+  - `single`：
+    1. 停轉送；`local.conf` 的 `RELAY_TO` 改成註解（保留 B 台 IP）
+    2. 遊戲 OutGauge 設到 127.0.0.1
+    3. A 台 `docker compose up -d`，等 LLM healthy（約 3.5～5 分鐘）
+    4. 跑 `codriver_check.sh`
+  - 手機：插筆電，筆電開通道連 **A 台**（A 台沒有 adb）。
+  - `dual`：停 A 台的 LLM＋橋接 → 還原 `RELAY_TO` → 開轉送 → 跑健康檢查。B 台要 `docker compose up -d`，手機改接 B 台。
+  - 遊戲不用重開。單機全開實測：整台最大 78.3 GB，FPS 平均 55.9（11/18）。
+- **小抄 PDF**：`~/codriver-dgx/pdf-venv/bin/python tools/dgx/cheatsheet_pdf.py`，用無頭 Chromium（Playwright，裝在使用者目錄，不用 sudo）把 `operator_cheatsheet.html` 輸出成 A4 的 `operator_cheatsheet.pdf`，並檢查是不是 2 頁（正反一張）。超過的話精簡文字，不要縮小字。
+
 ### 為什麼沒有遊戲選單
 
 BeamNG 內建的 CEF（Chromium 150）在 FEX 轉譯下 renderer 會 segfault。這是新版 CEF 的 FD 處理跟 FEX 不合，加 `-nosandbox` 或 FEX `Multiblock=0` 都沒用。
@@ -194,10 +207,10 @@ python3 tools/dgx/llm_bench.py --count 5 # 測試回答與延遲
 ```
 
 - `codriver-llm` 使用 `nvcr.io/nvidia/vllm:26.10-py3`（arm64）和 `~/codriver-models/<模型>`。
-- 對外的模型 id 預設是模型資料夾名稱，**現在用 `Qwen3.6-35B-A3B-FP8`**，App 設定頁的「模型名稱」填這個（填錯會 404）。備用 `Qwen3-8B`：`.env` 改 `CODRIVER_LLM_MODEL=Qwen3-8B`、`CODRIVER_LLM_GPU_MEM=0.25`，再 `docker compose up -d codriver-llm`。
-- App 用 `chat_template_kwargs.enable_thinking=false` 關閉 Qwen3 的思考，vLLM 原生支援。
-- 原本的 iAI Hub 模型 `Qwen/Qwen3.8-Flash-Next` 有 1800 億參數、360 GB，DGX 放不下，所以改用本機模型。
-- 下載模型：`tools/dgx/fetch_hf_model.sh Qwen/Qwen3.6-35B-A3B-FP8 ~/codriver-models/Qwen3.6-35B-A3B-FP8`（35 GB；備用的 `Qwen/Qwen3-8B` 16 GB）。
+- 對外的模型 id 預設是模型資料夾名稱（`.env` 的 `CODRIVER_LLM_MODEL`，實際名稱只寫在 `.env.example`／`docker-compose.yml` 這類技術設定裡）。App 會自動偵測模型 id，不用手動填。換備用模型：`.env` 改 `CODRIVER_LLM_MODEL`（備用模型的資料夾）、`CODRIVER_LLM_GPU_MEM=0.25`，再 `docker compose up -d codriver-llm`。
+- App 用 `chat_template_kwargs.enable_thinking=false` 關閉模型的思考模式，vLLM 原生支援。
+- 原本學校 iAI Hub 的雲端模型有 1800 億參數、360 GB，DGX 放不下，所以改用本機模型。
+- 下載模型：`tools/dgx/fetch_hf_model.sh <Hugging Face repo> ~/codriver-models/<資料夾>`（主模型 35 GB、備用模型 16 GB；repo 名稱見 `.env.example` 的註解）。
   - 這支腳本用 curl 逐檔續傳，斷線或 DNS 失敗會自動重試，不會從頭來。
   - 學校網路下，Hugging Face 官方的 `hf download` 會卡在 xet，而且斷線就從頭下載。
 - vLLM 映像檔約 11 GB（解壓後 39 GB）。學校網路 DNS 偶爾失敗，`docker pull` 要包在重試迴圈裡跑。
@@ -249,7 +262,7 @@ tools/dgx/measure_roles.sh            # 結果：logs/power_mem/*_summary.txt、
 | idle | — | 10.5／11.1 W | 40°C | 基準 |
 | 高雄，無交通車 | 60（垂直同步） | 34.5／39.0 W | 58°C | +19.3 GB |
 | 高雄，10 台交通車＋塞車 | 60（最低 54） | 46.9／57.2 W | 76°C | +21.3 GB |
-| llm（Qwen3-8B 連續請求，沒有遊戲） | — | 33.6／39.7 W | 59°C | +33.6 GB（vLLM 佔 28.2 GB） |
+| llm（備用模型連續請求，沒有遊戲） | — | 33.6／39.7 W | 59°C | +33.6 GB（vLLM 佔 28.2 GB） |
 | full（60 分鐘，遊戲＋Earth＋LLM＋橋接＋手機，A＋B 同一台） | 60 | 33.7／52.0 W | 64°C | 平均 +54.8、最大 +58.4 GB |
 | **full_auto（60 分鐘無人值守，11/18 01:18～02:18）**：高雄＋10 台交通車，自動駕駛 11 輪（每輪塞車 75 秒→解除→抵達），每輪 12 句 LLM 請求 | 平均 53.4（P5 32.7、最低 24） | 37.4／44.4 W | 64°C | 平均 +63.4、最大 +64.8 GB |
 
@@ -265,17 +278,17 @@ full（11/17，手機中途斷線）期間的狀況：
 - 記憶體只在開到新區域時增加（Earth 載入新地圖：54.5 → 60.9 → 63.1 GB），停在原地時持平。
 - 手機中途斷線約 40 分鐘，所以 LLM 只被呼叫 9 次，其中 2 次是 App 模型名稱填錯的 404。
 
-codriver-llm（Qwen3-8B，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸入約 1070 tokens，輸出約 33 tokens）：
+codriver-llm（備用模型，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸入約 1070 tokens，輸出約 33 tokens）：
 - **只跑 LLM（B 台的情況）**：122 次請求，意圖 100% 正確，延遲平均 2.47 秒、P95 3.1 秒
 - 跟遊戲同一台（單機）：延遲平均 4.3 秒，所以展示時遊戲和 LLM 要分開在 A、B 兩台
 
-### 依展示分工（11/18 10:00～11:34，`measure_roles.sh`，LLM＝Qwen3.6-35B-A3B-FP8）
+### 依展示分工（11/18 10:00～11:34，`measure_roles.sh`，LLM＝主模型）
 
 | 角色 | 內容 | GPU 平均／最大 | GPU 最高溫 | CPU 平均／最大 | 整台記憶體最大（減 idle 5.5 GB） | FPS 平均（P5、最低） |
 |---|---|---|---|---|---|---|
 | idle | 遊戲、Earth、Steam、LLM 全關（別組容器照常） | 11.0／11.5 W | 44°C | 1.4／4.2% | 5.5 GB | — |
 | roleA（A 台） | 遊戲＋10 台交通車，自動跑 4 輪（塞車→解除→抵達），15 分鐘 | 35.1／39.3 W | 61°C | 26.8／41.4% | 27.9（+22.4）GB | 57.5（40.6、23.9） |
-| roleB（B 台） | 35B＋橋接；前 20 分鐘每 10 秒一句，後 10 分鐘 4 連線壓力 | 19.4／38.6 W（展示頻率 12.1／28.6、壓力 34.0／38.6） | 63°C | 4.0／13.9% | 57.3（+51.8）GB | — |
+| roleB（B 台） | 主模型＋橋接；前 20 分鐘每 10 秒一句，後 10 分鐘 4 連線壓力 | 19.4／38.6 W（展示頻率 12.1／28.6、壓力 34.0／38.6） | 63°C | 4.0／13.9% | 57.3（+51.8）GB | — |
 | full（單機備案） | 全部同一台，自動跑 7 輪，30 分鐘 | 35.9／46.6 W | 63°C | 27.2／42.2% | 78.3（+72.8）GB | 55.9（34.0、23.2） |
 
 - LLM：roleB 展示頻率 120/120、平均 1.02 秒（P95 1.35）；roleB 壓力 987/987、平均 2.44 秒（P95 3.50）、每分鐘 98.5 句；full 84/84、約 1.63 秒。
@@ -288,7 +301,7 @@ codriver-llm（Qwen3-8B，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸�
 | 機器 | 跑什麼 | GPU 平均／最大 | GPU 最高溫 | CPU 平均／最大 | 整台記憶體最大（減 idle） | FPS 平均（P5、最低） |
 |---|---|---|---|---|---|---|
 | #1 spark-6f5b（A） | 遊戲＋Earth＋10 台交通車＋轉送，Moonlight 遠端看 | 36.2／43.3 W | 69°C | 24.5／50.8% | 28.2 GB（+22.7，idle 5.5） | 59.5（58.5、27.0） |
-| #2 nkust-dgx50（B） | 35B＋橋接，真實手機故事 | 9.2／33.6 W | 41°C | 0.5／5.6% | 55.4 GB（+50.9，idle 4.5） | — |
+| #2 nkust-dgx50（B） | 主模型＋橋接，真實手機故事 | 9.2／33.6 W | 41°C | 0.5／5.6% | 55.4 GB（+50.9，idle 4.5） | — |
 | #2 idle | 容器全停（沒有接顯示器、沒有串流） | 3.0／3.1 W | — | 0.3／4.6% | 4.5 GB | — |
 
 - 跟 11/18 單機分工量測（A 35.1／39.3 W、+22.4 GB；B 19.4／38.6 W、+51.8 GB）幾乎一樣。#1 的 GPU 最大值稍高，是因為這次全程有 Moonlight 串流（Sunshine 用 GPU 編碼）。
@@ -297,7 +310,7 @@ codriver-llm（Qwen3-8B，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸�
 
 ### 模型比較（11/18，遊戲同時在跑，App 真正的提示詞，temperature 0、enable_thinking=false）
 
-| | Qwen3-8B（BF16） | **Qwen3.6-35B-A3B-FP8（MoE，現在的預設）** |
+| | 備用模型（BF16，80 億參數） | **主模型（MoE、FP8，現在的預設）** |
 |---|---|---|
 | 指令判斷 | 24/24，平均 4.28 秒、P95 5.48 秒、7.7 tok/s | 24/24，平均 **1.65 秒**、P95 2.24 秒、18.5 tok/s |
 | 路由（car／app） | 8/8，0.86 秒 | 8/8，**0.51 秒** |
@@ -305,7 +318,7 @@ codriver-llm（Qwen3-8B，vLLM 26.10）使用 App 真正的 ROUTER_PROMPT（輸�
 | `CODRIVER_LLM_GPU_MEM` | 0.25 | 0.40（KV 快取 6.8 GiB，約 19.7 萬 tokens） |
 | 整台已用記憶體（遊戲＋10 台交通車＋LLM） | 約 56 GB | 約 74 GB／121.7 GB |
 
-- 35B-A3B 是 MoE，每個 token 只動用約 30 億參數，所以比 8B 還快；回答也比較自然。
+- 主模型是 MoE，每個 token 只動用一小部分參數，所以比備用模型還快；回答也比較自然。
 - LLM 回答的那幾秒，同一台的遊戲 FPS 會從 60 掉到 36～44（搶同一顆 GPU），回答完就回到 60。展示時遊戲在 A 台、LLM 在 B 台就沒有這個問題。
 
 交通車數量對 FPS 的影響（west_coast_usa 地圖）：10 台約 90 FPS、12 台約 80 FPS、**15 台只剩 12～20 FPS**。所以交通車最多用到 10～12 台。

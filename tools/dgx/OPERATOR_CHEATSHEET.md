@@ -9,21 +9,19 @@
 |---|---|---|---|
 | 1 | B 台 | `docker compose up -d` | `docker compose logs -f codriver-llm` 出現 `Application startup complete.`（約 5 分鐘） |
 | 2 | B 台 | `python3 tools/dgx/llm_bench.py --rounds 1` | `意圖正確 12/12` |
-| 3 | B 台 | 手機 USB 接上 → `systemctl --user start codriver-adb-keepalive`（自動補 adb forward／reverse，斷線重插也會補）→ 開 CoDriver | `docker compose logs --tail 3 codriver-bridge` 不再出現「✗ 手機沒連上」 |
+| 3 | B 台 | 手機 USB 接上 → 開 CoDriver（adb forward／reverse 由 `codriver-adb-keepalive` 自動補） | `docker compose logs --tail 3 codriver-bridge` 不再出現「✗ 手機沒連上」 |
 | 4 | A 台 | 第一次：`echo "RELAY_TO=<B 台 IP>" > ~/codriver-dgx/local.conf` → `tools/dgx/start_codriver.sh` | 最後一行「完成！」（約 2 分鐘） |
 | 5 | A 台 | `tail -3 ~/codriver-dgx/logs/relay.log` | 「30 秒內：OutGauge 1600 左右、位置 30 左右」 |
 | 6 | B 台 | Chromium 開 `http://localhost:8765/?unit=1` | 地圖上有車子的位置 |
-| 7 | A 台 | `tools/dgx/codriver_check.sh`（也會 SSH 到 B 台檢查） | 最後一行「全部正常 ✅」；❌ 的項目下面有怎麼修 |
-
-**`docker compose` 只在 B 台執行**；A 台只跑 `start_codriver.sh`（A 台的轉送程式已經佔住 4444/4445）。
+| 7 | A 台 | `tools/dgx/codriver_check.sh`（也會檢查 B 台） | 「全部正常 ✅」 |
 
 ## 展示流程（每一輪都走加油站版，約 5 分鐘）
 
-路線：朝新路起點 →（0.7 km）楠都加油站 →（0.67 km）楠梓車站麥當勞。**塞車是自動的**，操作員不用按 Ctrl+Alt+1。
+朝新路起點 →（0.7 km）楠都加油站 →（0.67 km）麥當勞；**塞車自動放，不用按**。
 
 | # | 駕駛／CoDriver | 操作員 |
 |---|---|---|
-| 1 | 上車：副駕說油量 12% 有點低，問要去哪裡 | 每輪開始前按 **Ctrl+Alt+2**（回起點、油量 12%、箭頭指向加油站，**手機 App 也會一起重置**） |
+| 1 | 上車：副駕說油量 12% 有點低，問要去哪裡 | 每輪開始前按 **Ctrl+Alt+2**（回起點、油 12%、App 重置） |
 | 2～3 | 「帶我去跟孟澤約的地方」→ 副駕找到約定、問要不要導航 →「好」 | — |
 | 4 | 副駕問要不要先去順路的加油站 →「好」 | 按 **Ctrl+Alt+5** 開自動駕駛（或駕駛自己開） |
 | 5 | 往加油站（約 1.5 分鐘） | — |
@@ -32,14 +30,14 @@
 | 8～9 | 停 20 秒以上，副駕問要不要通知孟澤 →「送出」 | 塞車 90 秒後**自動解除**；要提早解除按 Ctrl+Alt+1 |
 | 10 | 抵達麥當勞：三角錐、黃車、「【已抵達】」 | 下一輪按 **Ctrl+Alt+2** |
 
-不加油的短版（約 3 分鐘）：A 台 `bng fuel 100`。沒有經過加油站就不會自動塞車，出發後要自己按 Ctrl+Alt+1。
+短版（不加油，約 3 分鐘）：`bng fuel 100`，出發後自己按 Ctrl+Alt+1 放塞車。
 
 ## 遊戲內快速鍵（BeamNG 視窗在前景時）
 
 | 按鍵 | 功能 | 什麼時候用 |
 |---|---|---|
-| **Ctrl+Alt+1** | 塞車 開／關 | 平常不用按（加完油會自動塞車 90 秒）；自動塞車沒出現、或要提早解除時才按 |
-| **Ctrl+Alt+2** | 回起點（朝新路，油量 12%，GPS 先指向楠都加油站）＋手機 App 重置（清掉約定、導航、對話） | 每一輪展示開始前；約 20 秒 |
+| **Ctrl+Alt+1** | 塞車 開／關 | 平常不用按；自動塞車沒出現、或要提早解除時 |
+| **Ctrl+Alt+2** | 回起點（油 12%、GPS 指向加油站）＋App 重置 | 每一輪開始前；約 20 秒 |
 | **Ctrl+Alt+3** | 把車放回路上 | 撞牆、卡住、翻車 |
 | **Ctrl+Alt+4** | 交通車重生 | 交通車跑光了、或都擠在一起 |
 | **Ctrl+Alt+5** | 自動駕駛 開／關 | 沒有人開車時讓車子沿導航自己開；要自己開或自動駕駛卡住時再按一次關掉 |
@@ -72,6 +70,7 @@
 | 自動駕駛卡住不動 | Ctrl+Alt+5 關掉，自己開過去 | Ctrl+Alt+3 放回路上 |
 | AI 不回答、App 顯示錯誤 | B 台 `python3 tools/dgx/llm_bench.py --rounds 1`（App 會自動偵測模型名稱，不用手動填） | 有錯就 `docker compose restart codriver-llm`（約 3.5 分鐘）；手機那邊重做 `adb reverse tcp:8300 tcp:8300` |
 | 不知道哪裡壞 | A 台 `tools/dgx/codriver_check.sh`，照 ❌ 下面那行修 | — |
+| 兩台連不起來（轉送、防火牆、B 台壞了） | A 台 `tools/dgx/switch_mode.sh single`（A 台也跑 AI，約 5 分鐘）；筆電通道改連 A 台 | 修好後 `switch_mode.sh dual` |
 | 手機斷線 | 重新插 USB；有開 adb_keepalive 會在 10 秒內自動補好 forward／reverse | 手動 `adb forward …`、`adb reverse …`；重開 CoDriver App |
 | 遊戲畫面當住或關掉 | `tools/dgx/stop_codriver.sh` → `tools/dgx/start_codriver.sh` | 看 `~/codriver-dgx/logs/game_*.log` 最後幾行 |
 | 畫面變暗 | `bng day` | — |
@@ -81,5 +80,5 @@
 - 不要按 BeamNG.Earth 的「Update now」（版本凍結在 1.9.1-beta）。
 - 不要在 Steam 按 STOP；關遊戲用 `stop_codriver.sh`。
 - Steam 同一個帳號同時只能在一台跑遊戲：要換 C 台備援，先關 A 台的遊戲。
-- 不要在 A 台執行 `docker compose up`（橋接和 AI 都在 B 台）。誤開了：A 台 `docker compose rm -sf codriver-bridge`，轉送不受影響。
+- **`docker compose` 只在 B 台執行**，不要在 A 台跑（A 台的轉送程式佔住 4444/4445）。誤開了：A 台 `docker compose rm -sf codriver-bridge`，轉送不受影響。
 - 不要停或刪除別組（ai-truth-lab）的容器。

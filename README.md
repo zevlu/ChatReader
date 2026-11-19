@@ -40,7 +40,7 @@ flowchart LR
   end
   subgraph B["B 台：車機＋AI（docker compose）"]
     BR["codriver-bridge<br/>OutGauge → 手機"]
-    LLM["codriver-llm<br/>vLLM＋Qwen3.6-35B-A3B-FP8"]
+    LLM["codriver-llm<br/>NVIDIA NGC vLLM＋本機大型語言模型（FP8）"]
   end
   P["手機 CoDriver App<br/>（USB 接 B 台）<br/>Messenger、語音"]
   W["車機網頁<br/>地圖、ETA、AI 狀態"]
@@ -64,7 +64,7 @@ flowchart LR
 | 機器 | 跑什麼 | GPU 功耗 最大 | 整台記憶體 最大 | 整機功耗上限 | 遊戲 FPS |
 |---|---|---|---|---|---|
 | **#1 遊戲台** | BeamNG＋Earth 高雄＋10 台交通車＋塞車＋Moonlight 串流 | **47.0 W** | **30.5 GB** | 240 W（變壓器額定） | 平均 57.8（2 小時） |
-| **#2 車機＋AI 台** | Qwen3.6-35B-A3B（vLLM）＋橋接，含 10 分鐘壓力測試 | **38.6 W** | **57.3 GB** | 240 W（變壓器額定） | — |
+| **#2 車機＋AI 台** | 本機大型語言模型（vLLM）＋橋接，含 10 分鐘壓力測試 | **38.6 W** | **57.3 GB** | 240 W（變壓器額定） | — |
 
 兩次量測的明細：
 
@@ -120,12 +120,12 @@ adb forward tcp:8765 tcp:8765 && adb reverse tcp:8300 tcp:8300   # 手機 USB �
 
 | 項目 | 內容 |
 |---|---|
-| 模型 | [Qwen3.6-35B-A3B-FP8](https://huggingface.co/Qwen/Qwen3.6-35B-A3B-FP8)（MoE，350 億參數，每個 token 只用約 30 億；FP8） |
+| 模型 | 開源大型語言模型（Apache-2.0），混合專家（MoE）架構、FP8 量化，全部在 DGX 本機執行 |
 | 授權 | Apache-2.0 |
 | 推論 | NVIDIA NGC vLLM 26.10（`nvcr.io/nvidia/vllm:26.10-py3`，arm64），OpenAI 相容 API |
 | 用途 | 指令判斷（導航、通知晚到、送出、聊天…）、路由（車機／App）、主動提問 |
 | 實測 | 指令判斷 24/24 正確、平均 1.65 秒；路由 8/8、0.51 秒（遊戲同時在跑） |
-| 備用 | Qwen3-8B（BF16，Apache-2.0），平均 4.3 秒 |
+| 備用 | 較小的開源模型（BF16，Apache-2.0），平均 4.3 秒 |
 
 ## 安全設計
 

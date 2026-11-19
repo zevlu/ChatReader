@@ -24,8 +24,8 @@
 
 | 資料 | 大小 | 內容 | 必要 |
 |---|---|---|---|
-| `~/codriver-models/Qwen3.6-35B-A3B-FP8/`＋`Qwen3.6-35B-A3B-FP8.sha256` | 37.5 GB | 本機 LLM 模型（11/18 起的預設，Apache-2.0）；用 `tools/dgx/fetch_hf_model.sh` 下載，43 個檔案已和 Hugging Face 的 SHA256 比對過 | ✅ |
-| `~/codriver-models/Qwen3-8B/`＋`Qwen3-8B.sha256` | 16.4 GB | 備用模型（35B 出問題時換回來） | 建議 |
+| `~/codriver-models/<主模型資料夾>/`＋`<主模型資料夾>.sha256`（資料夾名稱 = `.env.example` 的 `CODRIVER_LLM_MODEL`） | 37.5 GB | 本機大型語言模型（11/18 起的預設，Apache-2.0）；用 `tools/dgx/fetch_hf_model.sh` 下載，43 個檔案已和 Hugging Face 的 SHA256 比對過 | ✅ |
+| `~/codriver-models/<備用模型資料夾>/`＋`.sha256` | 16.4 GB | 備用模型（主模型出問題時換回來） | 建議 |
 | `~/codriver-deploy/codriver-images.tar.zst`＋`.sha256` | 11.1 GB | vLLM 26.10＋python:3.12-slim 映像檔 | ✅ |
 | ChatReader repo＋`.env` | 小 | `.env` 不在 git 裡，**要另外帶**（裡面可能有金鑰，不要放公開的地方） | ✅ |
 | `adb` 的 .deb（`apt download adb android-libadb …`） | 小 | 會場沒網路時無法 `apt install` | 建議 |
@@ -34,9 +34,10 @@
 
 ```bash
 # 出發前（在這台）：產生清單（模型的清單已經做好就不用重做）
-cd ~/codriver-models && find Qwen3.6-35B-A3B-FP8 -type f | sort | xargs sha256sum > Qwen3.6-35B-A3B-FP8.sha256
+M=$(grep "^CODRIVER_LLM_MODEL=" ~/ChatReader/.env.example | cut -d= -f2)    # 主模型資料夾名稱（技術設定）
+cd ~/codriver-models && find "$M" -type f | sort | xargs sha256sum > "$M.sha256"
 # 複製到外接硬碟後、以及在會場複製到新機器後：驗證（全部 OK 才算數）
-cd <放模型的資料夾> && sha256sum -c --quiet Qwen3.6-35B-A3B-FP8.sha256 && echo 模型 OK
+cd <放模型的資料夾> && sha256sum -c --quiet "$M.sha256" && echo 模型 OK
 cd <放映像檔的資料夾> && sha256sum -c codriver-images.tar.zst.sha256
 # 載入映像檔（約 5 分鐘）
 zstd -dc codriver-images.tar.zst | docker load
@@ -77,13 +78,13 @@ Earth 地圖快取 `~/.cache/beamng-earth/`（索引用相對路徑）和 BeamNG
 | 步驟 | 時間 | 備註 |
 |---|---|---|
 | rsync 映像檔 11.1 GB | 96 秒 | 約 115 MB/s（同棟有線網路）；外接硬碟會更慢，抓 3～5 分鐘 |
-| rsync 35B 模型 37.5 GB | 323 秒 | 同上 |
+| rsync 主模型 37.5 GB | 323 秒 | 同上 |
 | sha256 驗證（映像檔＋模型 56 個檔案） | 22 秒 | 全部 OK |
 | `zstd -dc … \| docker load` | 137 秒 | |
 | 確認容器能用 GPU | 約 10 秒 | `docker run --rm --gpus all --entrypoint nvidia-smi nvcr.io/nvidia/vllm:26.10-py3 -L`。#2 的 Docker 沒有註冊 `nvidia` runtime，但有 CDI（`/var/run/cdi/nvidia.yaml`），`--gpus`／compose 的 `driver: nvidia` 都能用 |
 | 複製 repo、`cp .env.example .env`、改 `CODRIVER_MODELS_DIR`、`CODRIVER_OUTGAUGE_LISTEN=0.0.0.0` | 1 分鐘 | |
 | `docker compose up -d codriver-bridge` | 立刻 | |
-| `docker compose up -d codriver-llm` 到 `Application startup complete.` | 3 分 25 秒 | 35B；`llm_bench.py --rounds 1`：12/12、平均 0.94 秒 |
+| `docker compose up -d codriver-llm` 到 `Application startup complete.` | 3 分 25 秒 | 主模型；`llm_bench.py --rounds 1`：12/12、平均 0.94 秒 |
 | ufw 開 UDP 4444:4445 | 1 分鐘 | 要 sudo，由機器管理者執行 |
 | **合計** | **約 15 分鐘**（不含外接硬碟複製） | |
 
@@ -92,7 +93,7 @@ Earth 地圖快取 `~/.cache/beamng-earth/`（索引用相對路徑）和 BeamNG
 - **ufw 預設開著**：B 台要開 UDP 4444:4445；4446 不用開。
 - **8300 原本綁 0.0.0.0**（Docker 繞過 ufw，模型暴露在校網）：已改成只綁 127.0.0.1。
 - **手機重新插 USB 後 `adb forward` 會消失**：`adb forward --list` 是空的就重做 forward／reverse。
-- **App 預設模型名稱還是 `Qwen3-8B`**：會 404，要在設定頁改成 `Qwen3.6-35B-A3B-FP8`（App 下一版改預設值）。
+- **App 的模型名稱填錯會 404**：已改成 App 自動偵測模型 id（11/19），不用手動填。
 
 ## 2.6 雙機網路設定（會場一律用轉送）
 
