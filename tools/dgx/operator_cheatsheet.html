@@ -19,6 +19,8 @@ table:first-of-type td:nth-child(-n+2), th { white-space: nowrap; }
 table:nth-of-type(-n+3) td:first-child { white-space: nowrap; }
 /* 正面：開場、快速鍵、常用指令；反面：出錯怎麼辦、不要做（雙面列印一張 A4） */
 h2:nth-of-type(4) { break-before: page; }
+/* 反面字小一點，才放得下一張 */
+@media print { h2:nth-of-type(4) ~ * { font-size: 9.1pt; } h2:nth-of-type(4) ~ * code { font-size: 8.4pt; } }
 @media screen { body { padding: 10mm; } h2:nth-of-type(4) { margin-top: 12mm; } }
 </style></head><body>
 <h1>CoDriver 展示操作員小抄（A 台遊戲／B 台車機）</h1>
@@ -74,6 +76,7 @@ h2:nth-of-type(4) { break-before: page; }
 </tr>
 </tbody>
 </table>
+<p><strong><code>docker compose</code> 只在 B 台執行</strong>；A 台只跑 <code>start_codriver.sh</code>（A 台的轉送程式已經佔住 4444/4445）。</p>
 <h2>展示流程（每一輪都走加油站版，約 8 分鐘，實測 7～9 分鐘）</h2>
 <table>
 <thead>
@@ -278,6 +281,7 @@ h2:nth-of-type(4) { break-before: page; }
 <li>不要按 BeamNG.Earth 的「Update now」（版本凍結在 1.9.1-beta）。</li>
 <li>不要在 Steam 按 STOP；關遊戲用 <code>stop_codriver.sh</code>。</li>
 <li>Steam 同一個帳號同時只能在一台跑遊戲：要換 C 台備援，先關 A 台的遊戲。</li>
+<li>不要在 A 台執行 <code>docker compose up</code>（橋接和 AI 都在 B 台）。誤開了：A 台 <code>docker compose rm -sf codriver-bridge</code>，轉送不受影響。</li>
 <li>不要停或刪除別組（ai-truth-lab）的容器。</li>
 </ul>
 </body></html>

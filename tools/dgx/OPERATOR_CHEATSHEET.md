@@ -14,6 +14,8 @@
 | 5 | A 台 | `tail -3 ~/codriver-dgx/logs/relay.log` | 「30 秒內：OutGauge 1600 左右、位置 30 左右」 |
 | 6 | B 台 | Chromium 開 `http://localhost:8765/?unit=1` | 地圖上有車子的位置 |
 
+**`docker compose` 只在 B 台執行**；A 台只跑 `start_codriver.sh`（A 台的轉送程式已經佔住 4444/4445）。
+
 ## 展示流程（每一輪都走加油站版，約 8 分鐘，實測 7～9 分鐘）
 
 | # | 駕駛／CoDriver | 操作員 |
@@ -75,4 +77,5 @@
 - 不要按 BeamNG.Earth 的「Update now」（版本凍結在 1.9.1-beta）。
 - 不要在 Steam 按 STOP；關遊戲用 `stop_codriver.sh`。
 - Steam 同一個帳號同時只能在一台跑遊戲：要換 C 台備援，先關 A 台的遊戲。
+- 不要在 A 台執行 `docker compose up`（橋接和 AI 都在 B 台）。誤開了：A 台 `docker compose rm -sf codriver-bridge`，轉送不受影響。
 - 不要停或刪除別組（ai-truth-lab）的容器。
