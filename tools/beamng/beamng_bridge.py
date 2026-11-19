@@ -220,6 +220,12 @@ class JamDetector:
         self.forced_done = False
         self.pose_seen = False
 
+    def reset(self):
+        """回起點：從頭開始（不然上一輪的冷卻會擋掉下一輪的自然塞車）"""
+        self.jam = False
+        self.slow_since = self.fast_since = self.cleared_at = None
+        self.forced_done = False
+
     def step(self, now, kmh, fresh):
         ahead = fresh.get("carsAhead") if fresh else None
         if fresh:
@@ -357,6 +363,7 @@ class Game:
         self.pos = None                 # 車子目前的 (緯度, 經度)，查地名時先找附近
         self.leg_info = None            # 兩段導航時加進手機 pose.gps 的 {"leg":..,"afterViaM":..,"afterViaS":..}
         self.leg_final_at = None        # 到了停靠點後，什麼時候把 leg 改成 "final"
+        self.reset_seen = None          # 回起點次數（pose 的 resetSeq）：變多 → 叫手機 App 重置
         self.arrived_seq = None         # 遊戲 GPS 抵達次數（pose 的 arrivedSeq），NavSync 用來判斷停靠點到了沒
 
     def seen(self, addr, reply):
@@ -421,7 +428,8 @@ def main():
     sources = set()          # 收過 OutGauge 的來源 IP（雙機模式時確認是 A 台送來的）
 
     game = Game(psock, a.port + 2, parse_addr(a.game, a.port + 2))
-    NavSync(a.phone, Places(a.places), game).start()
+    navsync = NavSync(a.phone, Places(a.places), game)
+    navsync.start()
 
     fuel = FuelFilter()
     speed = 0.0
@@ -472,6 +480,19 @@ def main():
                             "arrivedSeq": j.get("arrivedSeq", 0), "arrivedName": j.get("arrivedName", ""),
                             "carsAhead": j.get("carsAhead"), "jamActive": bool(j.get("jamActive")),
                             "_at": now}
+                    # 2026-11-19：操作員回起點（Ctrl+Alt+2／bng start）→ 叫手機 App 重置（清掉約定、導航、對話），
+                    # 下一位來試的人從頭開始。第一次看到 resetSeq 只記下來，不重置（橋接剛啟動、遊戲早就回過起點）
+                    rseq = j.get("resetSeq")
+                    if isinstance(rseq, int):
+                        if game.reset_seen is not None and rseq > game.reset_seen:
+                            print(f"🔄 遊戲回起點（第 {rseq} 次）→ 手機 App 重置")
+                            navsync.leg, game.leg_info, game.leg_final_at = None, None, None
+                            jamdet.reset()
+                            try:
+                                post(a.phone, {"type": "action", "name": "reset"})
+                            except Exception as e:
+                                print(f"❌ 重置沒送到手機（{e}）")
+                        game.reset_seen = rseq
                     if game.leg_final_at and now >= game.leg_final_at:
                         game.leg_info, game.leg_final_at = {"leg": "final"}, None
                     if game.leg_info:

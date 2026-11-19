@@ -1,0 +1,17 @@
+# systemd 使用者服務（不用 sudo）：手機 USB 接 B 台時，adb forward／reverse 掉了就自動補上
+# 安裝（B 台）：
+#   mkdir -p ~/.config/systemd/user
+#   cp tools/dgx/codriver-adb-keepalive.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now codriver-adb-keepalive
+# 查看：systemctl --user status codriver-adb-keepalive；log：~/codriver-dgx/logs/adb_keepalive.log
+# 注意：使用者服務只在 nkust 有登入（桌面或 SSH）時才跑；要開機就跑需要 loginctl enable-linger nkust（要問管理者）
+[Unit]
+Description=CoDriver adb forward/reverse keepalive
+
+[Service]
+ExecStart=%h/ChatReader/tools/dgx/adb_keepalive.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

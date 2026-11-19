@@ -42,6 +42,7 @@ cp "$HOME/codriver-dgx/logs/relay.log" "$OUT/relay_after.log"
 {
   echo "== 輪數：$r（完成 $(grep -c '結束：沒有 GPS' "$OUT/rounds.log")）"
   echo "== 每輪秒數：$(grep -o '整輪 [0-9]* 秒' "$OUT/rounds.log" | grep -o '[0-9]*' | tr '\n' ' ')"
+  echo "== 自動塞車：開 $(grep -c '自動塞車 開' "$OUT/rounds.log")、沒出現 $(grep -c '沒有自動塞車' "$OUT/rounds.log")"
   echo "== 橋接：塞車 $(grep -c '【塞車】' "$OUT/bridge.log")、到加油站 $(grep -c '到了停靠點' "$OUT/bridge.log")、抵達 $(grep -c '🏁' "$OUT/bridge.log")"
   echo "== 轉送（每 30 秒）：錯誤合計 $(grep -o '錯誤 [0-9]*' "$OUT/relay_after.log" | awk '{s+=$2} END {print s+0}')、OutGauge 最少 $(grep -o 'OutGauge [0-9]*' "$OUT/relay_after.log" | awk 'NR>2{print $2}' | sort -n | head -1)、位置最少 $(grep -o '位置 [0-9]*' "$OUT/relay_after.log" | awk 'NR>2{print $2}' | sort -n | head -1)"
   python3 - "$OUT/fps.csv" <<'EOF'

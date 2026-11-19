@@ -68,8 +68,13 @@ end
 -- ---- 2. 回起點（每幀推進的小流程，不卡住遊戲）----
 local job = nil     -- { step, wait, left }
 local function startStep(step, wait) job.step, job.wait = step, wait or 0 end
+-- 回起點的次數：codriverPose 放進位置封包（resetSeq），橋接看到變多就叫手機 App 重置（清掉約定、導航、對話）
+M.resetSeq = 0
+function M.markReset() M.resetSeq = M.resetSeq + 1 return M.resetSeq end
+
 function M.backToStart()
   auto = nil
+  M.markReset()
   local A = api()
   if not A then toast('BeamNG.Earth 還沒載入') return end
   pcall(function() require('beamngEarth/gps').setAutodrive(false) end)

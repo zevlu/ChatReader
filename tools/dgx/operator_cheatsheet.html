@@ -53,7 +53,7 @@ h2:nth-of-type(4) { break-before: page; }
 <tr>
 <td>3</td>
 <td>B 台</td>
-<td>手機 USB 接上 → <code>adb forward tcp:8765 tcp:8765</code>、<code>adb reverse tcp:8300 tcp:8300</code> → 開 CoDriver</td>
+<td>手機 USB 接上 → <code>systemctl --user start codriver-adb-keepalive</code>（自動補 adb forward／reverse，斷線重插也會補）→ 開 CoDriver</td>
 <td><code>docker compose logs --tail 3 codriver-bridge</code> 不再出現「✗ 手機沒連上」</td>
 </tr>
 <tr>
@@ -74,6 +74,12 @@ h2:nth-of-type(4) { break-before: page; }
 <td>Chromium 開 <code>http://localhost:8765/?unit=1</code></td>
 <td>地圖上有車子的位置</td>
 </tr>
+<tr>
+<td>7</td>
+<td>A 台</td>
+<td><code>tools/dgx/codriver_check.sh</code>（也會 SSH 到 B 台檢查）</td>
+<td>最後一行「全部正常 ✅」；❌ 的項目下面有怎麼修</td>
+</tr>
 </tbody>
 </table>
 <p><strong><code>docker compose</code> 只在 B 台執行</strong>；A 台只跑 <code>start_codriver.sh</code>（A 台的轉送程式已經佔住 4444/4445）。</p>
@@ -91,7 +97,7 @@ h2:nth-of-type(4) { break-before: page; }
 <tr>
 <td>1</td>
 <td>上車：副駕說油量 12% 有點低，問要去哪裡</td>
-<td>每輪開始前按 <strong>Ctrl+Alt+2</strong>（回起點、油量 12%、箭頭指向加油站）</td>
+<td>每輪開始前按 <strong>Ctrl+Alt+2</strong>（回起點、油量 12%、箭頭指向加油站，<strong>手機 App 也會一起重置</strong>）</td>
 </tr>
 <tr>
 <td>2～3</td>
@@ -148,7 +154,7 @@ h2:nth-of-type(4) { break-before: page; }
 </tr>
 <tr>
 <td><strong>Ctrl+Alt+2</strong></td>
-<td>回起點（朝新路，油量設回 12%，GPS 先指向楠都加油站，車頭對準路線）</td>
+<td>回起點（朝新路，油量 12%，GPS 先指向楠都加油站）＋手機 App 重置（清掉約定、導航、對話）</td>
 <td>每一輪展示開始前；約 20 秒</td>
 </tr>
 <tr>
@@ -261,9 +267,14 @@ h2:nth-of-type(4) { break-before: page; }
 <td>有錯就 <code>docker compose restart codriver-llm</code>（約 3.5 分鐘）；手機那邊重做 <code>adb reverse tcp:8300 tcp:8300</code></td>
 </tr>
 <tr>
+<td>不知道哪裡壞</td>
+<td>A 台 <code>tools/dgx/codriver_check.sh</code>，照 ❌ 下面那行修</td>
+<td>—</td>
+</tr>
+<tr>
 <td>手機斷線</td>
-<td>重新插 USB，再執行一次 <code>adb forward …</code>、<code>adb reverse …</code></td>
-<td>重開 CoDriver App</td>
+<td>重新插 USB；有開 adb_keepalive 會在 10 秒內自動補好 forward／reverse</td>
+<td>手動 <code>adb forward …</code>、<code>adb reverse …</code>；重開 CoDriver App</td>
 </tr>
 <tr>
 <td>遊戲畫面當住或關掉</td>

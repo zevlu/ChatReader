@@ -9,10 +9,11 @@
 |---|---|---|---|
 | 1 | B 台 | `docker compose up -d` | `docker compose logs -f codriver-llm` 出現 `Application startup complete.`（約 5 分鐘） |
 | 2 | B 台 | `python3 tools/dgx/llm_bench.py --rounds 1` | `意圖正確 12/12` |
-| 3 | B 台 | 手機 USB 接上 → `adb forward tcp:8765 tcp:8765`、`adb reverse tcp:8300 tcp:8300` → 開 CoDriver | `docker compose logs --tail 3 codriver-bridge` 不再出現「✗ 手機沒連上」 |
+| 3 | B 台 | 手機 USB 接上 → `systemctl --user start codriver-adb-keepalive`（自動補 adb forward／reverse，斷線重插也會補）→ 開 CoDriver | `docker compose logs --tail 3 codriver-bridge` 不再出現「✗ 手機沒連上」 |
 | 4 | A 台 | 第一次：`echo "RELAY_TO=<B 台 IP>" > ~/codriver-dgx/local.conf` → `tools/dgx/start_codriver.sh` | 最後一行「完成！」（約 2 分鐘） |
 | 5 | A 台 | `tail -3 ~/codriver-dgx/logs/relay.log` | 「30 秒內：OutGauge 1600 左右、位置 30 左右」 |
 | 6 | B 台 | Chromium 開 `http://localhost:8765/?unit=1` | 地圖上有車子的位置 |
+| 7 | A 台 | `tools/dgx/codriver_check.sh`（也會 SSH 到 B 台檢查） | 最後一行「全部正常 ✅」；❌ 的項目下面有怎麼修 |
 
 **`docker compose` 只在 B 台執行**；A 台只跑 `start_codriver.sh`（A 台的轉送程式已經佔住 4444/4445）。
 
@@ -22,7 +23,7 @@
 
 | # | 駕駛／CoDriver | 操作員 |
 |---|---|---|
-| 1 | 上車：副駕說油量 12% 有點低，問要去哪裡 | 每輪開始前按 **Ctrl+Alt+2**（回起點、油量 12%、箭頭指向加油站） |
+| 1 | 上車：副駕說油量 12% 有點低，問要去哪裡 | 每輪開始前按 **Ctrl+Alt+2**（回起點、油量 12%、箭頭指向加油站，**手機 App 也會一起重置**） |
 | 2～3 | 「帶我去跟孟澤約的地方」→ 副駕找到約定、問要不要導航 →「好」 | — |
 | 4 | 副駕問要不要先去順路的加油站 →「好」 | 按 **Ctrl+Alt+5** 開自動駕駛（或駕駛自己開） |
 | 5 | 往加油站（約 1.5 分鐘） | — |
@@ -38,7 +39,7 @@
 | 按鍵 | 功能 | 什麼時候用 |
 |---|---|---|
 | **Ctrl+Alt+1** | 塞車 開／關 | 平常不用按（加完油會自動塞車 90 秒）；自動塞車沒出現、或要提早解除時才按 |
-| **Ctrl+Alt+2** | 回起點（朝新路，油量設回 12%，GPS 先指向楠都加油站，車頭對準路線） | 每一輪展示開始前；約 20 秒 |
+| **Ctrl+Alt+2** | 回起點（朝新路，油量 12%，GPS 先指向楠都加油站）＋手機 App 重置（清掉約定、導航、對話） | 每一輪展示開始前；約 20 秒 |
 | **Ctrl+Alt+3** | 把車放回路上 | 撞牆、卡住、翻車 |
 | **Ctrl+Alt+4** | 交通車重生 | 交通車跑光了、或都擠在一起 |
 | **Ctrl+Alt+5** | 自動駕駛 開／關 | 沒有人開車時讓車子沿導航自己開；要自己開或自動駕駛卡住時再按一次關掉 |
@@ -70,7 +71,8 @@
 | 車機網頁的地圖不動、B 台橋接說沒收到 BeamNG 的資料 | A 台 `tail ~/codriver-dgx/logs/relay.log`：OutGauge、位置都是 0 → 轉送沒開，`bng status` 要是 `OutGauge 開 127.0.0.1:4444`，重開 `start_codriver.sh` | 轉送有數字但 B 台收不到 → B 台防火牆的來源 IP 不對（部署清單 2.6） |
 | 自動駕駛卡住不動 | Ctrl+Alt+5 關掉，自己開過去 | Ctrl+Alt+3 放回路上 |
 | AI 不回答、App 顯示錯誤 | B 台 `python3 tools/dgx/llm_bench.py --rounds 1`（App 會自動偵測模型名稱，不用手動填） | 有錯就 `docker compose restart codriver-llm`（約 3.5 分鐘）；手機那邊重做 `adb reverse tcp:8300 tcp:8300` |
-| 手機斷線 | 重新插 USB，再執行一次 `adb forward …`、`adb reverse …` | 重開 CoDriver App |
+| 不知道哪裡壞 | A 台 `tools/dgx/codriver_check.sh`，照 ❌ 下面那行修 | — |
+| 手機斷線 | 重新插 USB；有開 adb_keepalive 會在 10 秒內自動補好 forward／reverse | 手動 `adb forward …`、`adb reverse …`；重開 CoDriver App |
 | 遊戲畫面當住或關掉 | `tools/dgx/stop_codriver.sh` → `tools/dgx/start_codriver.sh` | 看 `~/codriver-dgx/logs/game_*.log` 最後幾行 |
 | 畫面變暗 | `bng day` | — |
 
