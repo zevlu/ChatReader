@@ -28,6 +28,7 @@ cat <<'EOF'
   bng window [寬 高]        改成視窗模式（預設 1280 720）
   bng fullscreen            改回 1920x1080 無邊框全螢幕
   bng day [小時]            固定成白天（預設 13 點、時間不走；Earth 預設跟真實時間，晚上會全黑）
+  bng fuel [百分比]          設定油量（預設 100 = 加滿）；完整旅程開場用 bng fuel 12（App 會問要不要先去加油站）
   bng auto [on|off]         自動駕駛（沿導航路線自己開）開／關；不給參數就切換（遊戲裡是 Ctrl+Alt+5）
   bng pause | resume        暫停／繼續（遊戲裡是 J 鍵）
   bng reset                 把車重置在原地（遊戲裡是 R 鍵）
@@ -121,9 +122,9 @@ case "$1" in
     s=$(ll "$START_PLACE"); d=$(ll "$START_GPS")
     [ -n "$s" ] || { echo "START_PLACE「$START_PLACE」不在 PLACES 裡，也不是「緯度 經度」"; exit 1; }
     if [ -n "$d" ]; then dest="{lat=${d% *}, lon=${d#* }, name='$START_GPS'}"; else dest=false; fi
-    send "if not codriverHotkeys then return '快速鍵沒有載入（mod 要更新）' end return codriverHotkeys.config({start={lat=${s% *}, lon=${s#* }, name='$START_PLACE'}, dest=$dest, traffic=${START_TRAFFIC:-10}})" ;;
+    send "if not codriverHotkeys then return '快速鍵沒有載入（mod 要更新）' end return codriverHotkeys.config({start={lat=${s% *}, lon=${s#* }, name='$START_PLACE'}, dest=$dest, traffic=${START_TRAFFIC:-10}, fuel=${START_FUEL:-100}})" ;;
   start)
-    send "require('beamngEarth/gps').setAutodrive(false) codriverDest.clear() return codriverJam.off()" > /dev/null
+    send "require('beamngEarth/gps').setAutodrive(false) codriverDest.clear() if ${START_FUEL:-100} < 100 then codriverDest.setFuel(${START_FUEL:-100} / 100) end return codriverJam.off()" > /dev/null
     "$0" place "$START_PLACE" || exit 1
     sleep 5
     for i in $(seq 1 30); do "$0" lua "return tostring(beamngEarth_api.ready())" 2>/dev/null | grep -q true && break; sleep 2; done
@@ -143,6 +144,7 @@ case "$1" in
     h=${2:-13}
     # BeamNG 的時間是 0～1 的比例，正午 = 0；Earth 的天空改成 manual（存在設定裡），不然它會改回真實時間
     send "local h = $h local st = beamngEarth_settings if st and st.set then st.set('skyMode', 'manual') end local ok, sky = pcall(require, 'beamngEarth/sky') if ok and sky.setMode then sky.setMode('manual') end core_environment.setTimeOfDay({time = ((h - 12) / 24) % 1, play = false}) return string.format('固定在 %02d:00（時間不走）', h)" ;;
+  fuel) send "return codriverDest.setFuel(${2:-100} / 100)" ;;
   auto)
     case "$2" in on) v=true ;; off) v=false ;; *) v="not g.autodrive()" ;; esac
     send "local g = require('beamngEarth/gps') local on = g.setAutodrive($v) return on and '自動駕駛 開（沿導航路線自己開）' or '自動駕駛 關（駕駛自己開）'" ;;

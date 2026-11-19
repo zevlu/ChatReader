@@ -74,6 +74,59 @@ h2:nth-of-type(4) { break-before: page; }
 </tr>
 </tbody>
 </table>
+<h2>展示流程（每一輪都走加油站版，約 8 分鐘，實測 7～9 分鐘）</h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>駕駛／CoDriver</th>
+<th>操作員</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>上車：副駕說油量 12% 有點低，問要去哪裡</td>
+<td>開場前確認油量 12%（<code>start_codriver.sh</code>、Ctrl+Alt+2 都會設好）</td>
+</tr>
+<tr>
+<td>2～3</td>
+<td>「帶我去跟孟澤約的地方」→ 副駕找到約定、問要不要導航 →「好」</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>副駕問要不要先去順路的加油站 →「好」</td>
+<td>遊戲路面箭頭先指向<strong>楠都加油站</strong></td>
+</tr>
+<tr>
+<td>5～6</td>
+<td>出發，往加油站</td>
+<td>出發後按 <strong>Ctrl+Alt+1</strong> 放塞車</td>
+</tr>
+<tr>
+<td>7～8</td>
+<td>停 20 秒以上，副駕問要不要通知孟澤 →「送出」</td>
+<td>按下後約 1 分鐘副駕才會問；<strong>副駕還沒問前不要解除</strong></td>
+</tr>
+<tr>
+<td>9</td>
+<td>繼續開</td>
+<td>送出後再按 <strong>Ctrl+Alt+1</strong> 解除塞車</td>
+</tr>
+<tr>
+<td>10～11</td>
+<td>到加油站：自動加滿、副駕說「到加油站了」，箭頭換成麥當勞</td>
+<td>—</td>
+</tr>
+<tr>
+<td>12</td>
+<td>抵達麥當勞：三角錐、黃車、「【已抵達】」</td>
+<td>下一輪按 <strong>Ctrl+Alt+2</strong>（回起點、油量設回 12%）</td>
+</tr>
+</tbody>
+</table>
+<p>不加油的短版（約 3 分鐘）：A 台 <code>bng fuel 100</code>。</p>
 <h2>遊戲內快速鍵（BeamNG 視窗在前景時）</h2>
 <table>
 <thead>
@@ -87,11 +140,11 @@ h2:nth-of-type(4) { break-before: page; }
 <tr>
 <td><strong>Ctrl+Alt+1</strong></td>
 <td>塞車 開／關</td>
-<td>開到東寧路右轉旗楠路前按「開」；CoDriver 問完、駕駛說「送出」後再按一次解除</td>
+<td>第一段（往加油站）出發後按「開」；CoDriver 問完、駕駛說「送出」後再按一次解除</td>
 </tr>
 <tr>
 <td><strong>Ctrl+Alt+2</strong></td>
-<td>回起點（清豐二路，GPS 重設到楠梓車站麥當勞，車頭對準路線）</td>
+<td>回起點（清豐二路，油量設回 12%，GPS 重設到楠梓車站麥當勞，車頭對準路線）</td>
 <td>每一輪展示開始前；約 20 秒</td>
 </tr>
 <tr>
@@ -123,7 +176,11 @@ h2:nth-of-type(4) { break-before: page; }
 <tbody>
 <tr>
 <td><code>bng start</code></td>
-<td>回起點（和 Ctrl+Alt+2 一樣，會印出結果）</td>
+<td>回起點（和 Ctrl+Alt+2 一樣，會印出結果；油量設回 12%）</td>
+</tr>
+<tr>
+<td><code>bng fuel 12</code> ／ <code>bng fuel</code></td>
+<td>油量設成 12%（App 會問要不要先去加油站）／加滿</td>
 </tr>
 <tr>
 <td><code>bng auto on</code> ／ <code>bng auto off</code></td>

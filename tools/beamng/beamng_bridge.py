@@ -12,7 +12,9 @@ BeamNG → CoDriver 橋接程式（2026-11-11 里程碑 2＋3；2026-11-17 加�
   3. 位置／GPS（DGX 版，遊戲裡要有 tools/dgx/beamng_mod 的 codriverPose）：
      收遊戲送來的 UDP JSON（port = OutGauge port + 1）→ 轉給手機，網頁車機畫地圖、算真實到達時間：
          {"type":"pose","lat":..,"lon":..,"heading":度,"speedKmh":..,
-          "gps":{"name":..,"lat":..,"lon":..,"remainingM":..,"etaS":..,"planning":false} 或 null,
+          "gps":{"name":..,"lat":..,"lon":..,"remainingM":..,"etaS":..,"planning":false,
+                 有中途停靠點時再加 "leg":"via"|"final"；"via" 時還有 "afterViaM","afterViaS"（停靠點 → 最後目的地）} 或 null,
+          （兩段導航進行中：遊戲 GPS 暫時清空時 gps 也不會是 null，會是只有 leg 欄位的物件；pose 最外層也有同樣的欄位）
           "arrivedSeq":抵達次數,"arrivedName":".."}                                  每秒一次
          {"type":"route","version":"..","distM":..,"durS":..,"points":[[lat,lon],...]}  路線改變時、之後每 30 秒
   4. 導航同步：每秒讀手機的 GET /state，看到新的導航（nav.cmd = plan）就把目的地名稱換成座標
@@ -112,50 +114,183 @@ class Places:
             self.items = []
             print(f"⚠ 讀不到 {self.path}（{e}），只用 OpenStreetMap 查地名")
 
-    def resolve(self, dest):
+    def resolve(self, dest, near=None):
+        """near：車子目前的 (緯度, 經度)，問 OpenStreetMap 時先找附近（2026-11-19：只說「麥當勞」曾找到 11 公里外的分店）"""
         if not dest:
             return None
         self.reload()
         if dest in self.cache:
             return self.cache[dest]
         hit = None
-        for p in self.items:
+        for p in self.items:                       # 1. keywords 全部出現在目的地名稱裡
             kws = p.get("keywords") or [p.get("name", "")]
             if all(k and k in dest for k in kws):
                 hit = (float(p["lat"]), float(p["lon"]), p.get("name", dest))
                 break
-        if hit is None:
-            hit = self.nominatim(dest)
-        self.cache[dest] = hit
+        if hit is None:                            # 2. 使用者說的比較短：地點名稱裡包含目的地（「麥當勞」→「楠梓車站麥當勞」）
+            for p in self.items:
+                if len(dest) >= 2 and dest in p.get("name", ""):
+                    hit = (float(p["lat"]), float(p["lon"]), p.get("name", dest))
+                    break
+        if hit is None:                            # 3. OpenStreetMap，先找車子附近
+            hit = self.nominatim(dest, near)
+        if hit is not None:
+            self.cache[dest] = hit
         return hit
 
     @staticmethod
-    def nominatim(dest):
+    def nominatim(dest, near=None):
         q = dest if "高雄" in dest else dest + " 高雄"
-        url = ("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=tw&q="
-               + urllib.parse.quote(q))
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "CoDriver-bridge/1.0"})
-            with urllib.request.urlopen(req, timeout=8) as r:
-                res = json.loads(r.read().decode("utf-8"))
-            if res:
-                return float(res[0]["lat"]), float(res[0]["lon"]), dest
-        except Exception as e:
-            print(f"⚠ OpenStreetMap 查不到「{dest}」（{e}）")
+        base = ("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=tw&q="
+                + urllib.parse.quote(q))
+        tries = []
+        if near and near[0] is not None and near[1] is not None:
+            lat, lon, d = float(near[0]), float(near[1]), 0.05          # 約 5 公里見方
+            tries.append(base + f"&viewbox={lon - d},{lat + d},{lon + d},{lat - d}&bounded=1")
+        tries.append(base)
+        for url in tries:
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "CoDriver-bridge/1.0"})
+                with urllib.request.urlopen(req, timeout=8) as r:
+                    res = json.loads(r.read().decode("utf-8"))
+                if res:
+                    return float(res[0]["lat"]), float(res[0]["lon"]), dest
+            except Exception as e:
+                print(f"⚠ OpenStreetMap 查不到「{dest}」（{e}）")
+                return None
+        return None
+
+
+LEGS_FILE = os.path.join(HERE, "route_legs.json")
+_legs_lock = threading.Lock()
+
+
+def leg_estimate(a, b):
+    """停靠點 a → 最後目的地 b 的 (公尺, 秒)。先問 OSRM（4 秒內），成功就記進 route_legs.json；
+    沒網路時用 route_legs.json 記過的；都沒有就用直線距離 ×1.4、時速 25 公里估。"""
+    key = "%.5f,%.5f>%.5f,%.5f" % (a[0], a[1], b[0], b[1])
+    try:
+        url = (f"https://routing.openstreetmap.de/routed-car/route/v1/driving/{a[1]:.6f},{a[0]:.6f};{b[1]:.6f},{b[0]:.6f}"
+               "?overview=false")
+        req = urllib.request.Request(url, headers={"User-Agent": "CoDriver-bridge/1.0"})
+        with urllib.request.urlopen(req, timeout=4) as r:
+            route = json.loads(r.read().decode("utf-8"))["routes"][0]
+        m, sec = float(route["distance"]), float(route["duration"])
+        with _legs_lock:                  # 記下來給沒網路時用（容器裡是唯讀掛載就寫不了，不影響）
+            try:
+                try:
+                    legs = json.load(open(LEGS_FILE, encoding="utf-8"))
+                except (OSError, ValueError):
+                    legs = {}
+                if legs.get(key) != [round(m), round(sec)]:
+                    legs[key] = [round(m), round(sec)]
+                    with open(LEGS_FILE, "w", encoding="utf-8") as f:
+                        json.dump(legs, f, ensure_ascii=False, indent=1)
+            except OSError:
+                pass
+        return m, sec, "OSRM"
+    except Exception:
+        pass
+    try:
+        hit = json.load(open(LEGS_FILE, encoding="utf-8")).get(key)
+        if hit:
+            return float(hit[0]), float(hit[1]), "route_legs.json"
+    except (OSError, ValueError):
+        pass
+    k = 111320.0
+    d = ((b[0] - a[0]) * k) ** 2 + ((b[1] - a[1]) * k * 0.92) ** 2
+    m = d ** 0.5 * 1.4
+    return m, m / (25 / 3.6), "直線估計"
+
+
+class JamDetector:
+    """塞車判斷（每秒呼叫 step 一次，回傳 "jam"／"jamClear"／None）。
+
+    - 塞車：低於 jam_kmh 持續 jam_sec 秒，而且前方 40 公尺內至少 jam_cars 台同方向的車（停紅燈、路邊停車不算）；
+      沒有位置資料就只看車速；操作員放的塞車（bng jam on／Ctrl+Alt+1，pose 的 jamActive）放寬成 1 台
+    - 車流恢復：連續 clear_sec 秒都比 jam_kmh 快（車陣裡往前挪一下不算）
+    - 冷卻：恢復後 cooldown 秒內不再通知「自然的」塞車（2026-11-19：挪一下就恢復 → 又塞住 → App 又問一次要不要
+      通知對方）。操作員放的塞車不受冷卻限制，但同一次只通知一次
+    """
+
+    def __init__(self, kmh, sec, cars, clear_sec, cooldown, log=print):
+        self.kmh, self.sec, self.cars, self.clear_sec, self.cooldown, self.log = kmh, sec, cars, clear_sec, cooldown, log
+        self.jam = False
+        self.slow_since = self.fast_since = self.cleared_at = None
+        self.forced_done = False
+
+    def step(self, now, kmh, fresh):
+        ahead = fresh.get("carsAhead") if fresh else None
+        forced = bool(fresh and fresh.get("jamActive"))
+        if fresh and not forced:
+            self.forced_done = False                 # 操作員解除了：下一次 jam on 可以再通知
+        if kmh < self.kmh:
+            self.slow_since = self.slow_since or now
+            self.fast_since = None
+            slow = now - self.slow_since
+            if self.jam or slow < self.sec:
+                return None
+            if self.cleared_at and now - self.cleared_at < self.cooldown and not (forced and not self.forced_done):
+                if int(slow) % 15 == 0:
+                    self.log(f"…慢速 {slow:.0f} 秒，但剛恢復 {now - self.cleared_at:.0f} 秒（冷卻 {self.cooldown:.0f} 秒內不再通知）")
+                return None
+            if ahead is None or ahead >= (1 if forced else self.cars):
+                self.jam = True
+                if forced:
+                    self.forced_done = True
+                why = "沒有位置資料，只看車速" if ahead is None else f"前方 {ahead} 台車" + ("（bng jam on）" if forced else "")
+                self.log(f"【塞車】已經 {slow:.0f} 秒低於 {self.kmh:.0f} km/h，{why} → 通知副駕")
+                return "jam"
+            if int(slow) % 10 == 0:
+                self.log(f"…慢速 {slow:.0f} 秒，但前方只有 {ahead} 台車（紅燈或停車？）→ 不算塞車")
+            return None
+        self.fast_since = self.fast_since or now
+        if self.jam and now - self.fast_since >= self.clear_sec:
+            self.jam, self.cleared_at, self.slow_since = False, now, None
+            self.log("【車流恢復】")
+            return "jamClear"
+        if not self.jam:
+            self.slow_since = None
         return None
 
 
 class NavSync(threading.Thread):
-    """每秒讀手機 /state 的 nav，新導航 → 叫遊戲設 GPS；取消／完成 → 取消遊戲 GPS。"""
+    """每秒讀手機 /state 的 nav，新導航 → 叫遊戲設 GPS；取消／完成 → 取消遊戲 GPS。
+
+    有中途停靠點（nav.via，或 nav.viaGas = 先去加油站）時分兩段：遊戲 GPS 先設到停靠點，
+    遊戲回報抵達（pose 的 arrivedSeq 變多）後，再設到最後目的地。（2026-11-19：上車油不夠 → 先去加油站）
+    """
 
     def __init__(self, phone, places, game):
         super().__init__(daemon=True)
         self.phone, self.places, self.game = phone, places, game
         self.key = None          # (nav.id, cmd) 處理過的
+        self.leg = None          # 第一段（往停靠點）進行中：{"dest": (lat, lon, name), "via": 名稱, "seq0": 出發時的 arrivedSeq}
+
+    def gps(self, hit, why):
+        lat, lon, name = hit
+        print(f"🧭 {why} → 遊戲 GPS 設到 {name}（{lat:.5f}, {lon:.5f}）")
+        self.game.command({"cmd": "gps", "lat": lat, "lon": lon, "name": name})
+
+    def check_leg(self):
+        """第一段到了停靠點 → 換成最後目的地"""
+        if not self.leg:
+            return
+        seq = self.game.arrived_seq
+        if seq is None:
+            return
+        if self.leg["seq0"] is None:
+            self.leg["seq0"] = seq
+        elif seq > self.leg["seq0"]:
+            leg, self.leg = self.leg, None
+            self.gps(leg["dest"], f"到了停靠點「{leg['via']}」，接著去")
+            # 手機的 pose 再報 3 秒 leg="via"（網頁看到「leg=via 時抵達」才送 status:'via'），之後才換成 "final"
+            self.game.leg_final_at = time.time() + 3.0
 
     def run(self):
         while True:
             time.sleep(1.0)
+            self.check_leg()
             try:
                 with urllib.request.urlopen(self.phone.rstrip("/") + "/state", timeout=2) as r:
                     nav = json.loads(r.read().decode("utf-8")).get("nav")
@@ -169,15 +304,29 @@ class NavSync(threading.Thread):
                 continue
             self.key = key
             if cmd == "plan":
+                self.leg = None
                 dest = nav.get("dest") or ""
-                hit = self.places.resolve(dest)
-                if hit:
-                    lat, lon, name = hit
-                    print(f"🧭 App 導航到「{dest}」→ 遊戲 GPS 設到 {name}（{lat:.5f}, {lon:.5f}）")
-                    self.game.command({"cmd": "gps", "lat": lat, "lon": lon, "name": name})
-                else:
+                hit = self.places.resolve(dest, self.game.pos)
+                if not hit:
                     print(f"⚠ 找不到「{dest}」的座標，遊戲 GPS 沒有設定（可在 places.json 加上這個地點）")
+                    continue
+                via = (nav.get("via") or "").strip() or ("加油站" if nav.get("viaGas") else "")
+                vhit = self.places.resolve(via, self.game.pos) if via else None
+                if via and not vhit:
+                    print(f"⚠ 找不到停靠點「{via}」的座標，直接導航到目的地")
+                if vhit:
+                    m, sec, src = leg_estimate(vhit, hit)
+                    self.game.leg_info = {"leg": "via", "afterViaM": round(m), "afterViaS": round(sec)}
+                    self.game.leg_final_at = None
+                    self.leg = {"dest": hit, "via": vhit[2], "seq0": self.game.arrived_seq}
+                    self.gps(vhit, f"App 導航到「{dest}」，中途先到「{via}」（第一段；之後還有 {m / 1000:.2f} km、"
+                                   f"{sec / 60:.1f} 分，{src}）")
+                else:
+                    self.game.leg_info, self.game.leg_final_at = None, None
+                    self.gps(hit, f"App 導航到「{dest}」")
             elif cmd in ("cancel", "done"):
+                self.leg = None
+                self.game.leg_info, self.game.leg_final_at = None, None
                 print(f"🧭 App 導航{'取消' if cmd == 'cancel' else '結束'} → 取消遊戲 GPS")
                 self.game.command({"cmd": "gpsClear"})
 
@@ -197,6 +346,10 @@ class Game:
     def __init__(self, sock, cmd_port, fallback=None):
         self.sock, self.cmd_port, self.fallback = sock, cmd_port, fallback
         self.addr, self.pending = None, None
+        self.pos = None                 # 車子目前的 (緯度, 經度)，查地名時先找附近
+        self.leg_info = None            # 兩段導航時加進手機 pose.gps 的 {"leg":..,"afterViaM":..,"afterViaS":..}
+        self.leg_final_at = None        # 到了停靠點後，什麼時候把 leg 改成 "final"
+        self.arrived_seq = None         # 遊戲 GPS 抵達次數（pose 的 arrivedSeq），NavSync 用來判斷停靠點到了沒
 
     def seen(self, addr, reply):
         target = (addr[0], addr[1]) if reply else (addr[0], self.cmd_port)
@@ -240,6 +393,10 @@ def main():
                     help="持續幾秒算塞車（預設 20，環境變數 CODRIVER_JAM_SEC）")
     ap.add_argument("--jam-cars", type=int, default=int(env("CODRIVER_JAM_CARS", "2")),
                     help="前方 40 公尺內同方向至少幾台車才算塞車（遊戲有送位置時才用；bng jam on 時放寬成 1 台）")
+    ap.add_argument("--jam-clear-sec", type=float, default=float(env("CODRIVER_JAM_CLEAR_SEC", "10")),
+                    help="車速連續幾秒高於 --jam-kmh 才算車流恢復（預設 10）")
+    ap.add_argument("--jam-cooldown", type=float, default=float(env("CODRIVER_JAM_COOLDOWN", "180")),
+                    help="車流恢復後幾秒內不再通知新的塞車（預設 180；一輪展示只問一次）")
     ap.add_argument("--game", default=env("CODRIVER_GAME_ADDR", ""),
                     help="選填：遊戲台的位址（IP 或 IP:port），只在還沒收到位置封包時用；平常自動回到位置封包的來源")
     ap.add_argument("--places", default=env("CODRIVER_PLACES", os.path.join(HERE, "places.json")),
@@ -264,8 +421,7 @@ def main():
     last_packet = 0.0
     last_send = 0.0
     phone_ok = None          # None = 還沒試過
-    slow_since = None
-    jam = False
+    jamdet = JamDetector(a.jam_kmh, a.jam_sec, a.jam_cars, a.jam_clear_sec, a.jam_cooldown)
     pose, route = None, None
     route_sent_ver, route_sent_at = None, 0.0
 
@@ -308,6 +464,18 @@ def main():
                             "arrivedSeq": j.get("arrivedSeq", 0), "arrivedName": j.get("arrivedName", ""),
                             "carsAhead": j.get("carsAhead"), "jamActive": bool(j.get("jamActive")),
                             "_at": now}
+                    if game.leg_final_at and now >= game.leg_final_at:
+                        game.leg_info, game.leg_final_at = {"leg": "final"}, None
+                    if game.leg_info:
+                        # 抵達的那一刻遊戲會先清掉 GPS（gps=null），但「這次抵達是哪一段」一定要讓網頁看到：
+                        # gps 是 null 時也送一個只有 leg 欄位的 gps，pose 最外層也放一份
+                        if pose["gps"] is None:
+                            pose["gps"] = dict(game.leg_info)
+                        else:
+                            pose["gps"].update(game.leg_info)
+                        pose.update(game.leg_info)
+                    game.arrived_seq = pose["arrivedSeq"] or 0
+                    game.pos = (pose["lat"], pose["lon"])
                     if pose["arrivedSeq"] and pose["arrivedSeq"] != getattr(game, "arrived_seen", 0):
                         game.arrived_seen = pose["arrivedSeq"]
                         print(f"🏁 遊戲 GPS 抵達「{pose['arrivedName']}」")
@@ -341,26 +509,10 @@ def main():
         kmh, pct = int(round(speed)), int(round(fuel.value))
 
         # 塞車判斷 → 通知手機（手機只在導航中理會）
-        # 低速夠久，而且前面真的有車（停紅燈、路邊停車不算）；沒有位置資料就只看車速；bng jam on 中放寬成 1 台
-        event = None
         fresh = pose if pose and now - pose["_at"] < 3.0 else None
-        ahead = fresh.get("carsAhead") if fresh else None
+        event = jamdet.step(now, kmh, fresh)
+        ahead = fresh.get("carsAhead") if fresh else None        # 狀態列顯示用
         forced = bool(fresh and fresh.get("jamActive"))
-        if kmh < a.jam_kmh:
-            slow_since = slow_since or now
-            if not jam and now - slow_since >= a.jam_sec:
-                if ahead is None or ahead >= (1 if forced else a.jam_cars):
-                    jam = True
-                    event = "jam"
-                    why = "沒有位置資料，只看車速" if ahead is None else f"前方 {ahead} 台車" + ("（bng jam on）" if forced else "")
-                    print(f"【塞車】已經 {now - slow_since:.0f} 秒低於 {a.jam_kmh:.0f} km/h，{why} → 通知副駕")
-                elif int(now - slow_since) % 10 == 0:
-                    print(f"…慢速 {now - slow_since:.0f} 秒，但前方只有 {ahead} 台車（紅燈或停車？）→ 不算塞車")
-        else:
-            if jam:
-                event = "jamClear"
-                print("【車流恢復】")
-            slow_since, jam = None, False
         if event:
             try:
                 post(a.phone, {"type": "action", "name": event})
@@ -378,7 +530,7 @@ def main():
                 print(f"❌ 連不到手機（{e}）：CoDriver 有開嗎？adb forward 做了嗎？")
             phone_ok = False
             mark = "✗ 手機沒連上"
-        slow = f"  慢速 {now - slow_since:3.0f} 秒" if slow_since else ""
+        slow = f"  慢速 {now - jamdet.slow_since:3.0f} 秒" if jamdet.slow_since else ""
         gps = ""
         if fresh and fresh.get("gps") and fresh["gps"].get("remainingM") is not None:
             gps = f"  GPS 剩 {fresh['gps']['remainingM'] / 1000:.1f} 公里"
