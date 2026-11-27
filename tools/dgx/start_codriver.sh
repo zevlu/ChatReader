@@ -7,7 +7,8 @@ PLACE=${1:-$START_PLACE}; TRAFFIC=${2:-$START_TRAFFIC}
 U=$BEAMNG_USER
 SLOG=$HOME/.cache/beamng-earth/logs/launcher.log
 mkdir -p "$CODRIVER_HOME/logs"; GLOG=$CODRIVER_HOME/logs/game_$(date +%m%d_%H%M).log
-export DISPLAY=:0 XAUTHORITY=/run/user/$(id -u)/gdm/Xauthority
+# 桌面不是 :0 的機器（例如 spark-7180 是 :1）：在 ~/codriver-dgx/local.conf 寫 GAME_DISPLAY=:1
+export DISPLAY=${GAME_DISPLAY:-:0} XAUTHORITY=/run/user/$(id -u)/gdm/Xauthority
 export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus XDG_RUNTIME_DIR=/run/user/$(id -u)
 say() { echo "[$(date +%T)] $*"; }
 waitlog() { for i in $(seq 1 $3); do grep -a -q -E "$2" "$1" 2>/dev/null && return 0; sleep 2; done; return 1; }

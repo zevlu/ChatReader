@@ -6,7 +6,7 @@
 
 | 台 | 角色 | 跑什麼 | 部署方式 |
 |---|---|---|---|
-| **A 遊戲台** | 駕駛看的畫面 | Steam（背景）、BeamNG.drive 0.40.5 原生 Linux 版（FEX 轉譯）、BeamNG.Earth 1.9.1-beta 世界伺服器 | 主機層（本資料夾的腳本），**不用 Docker** |
+| **A 遊戲台** | 駕駛看的畫面 | Steam（背景）、BeamNG.drive 0.40.x 原生 Linux 版（#1 是 0.40.5，11/27 換上的 spark-7180 是 0.40.6）（FEX 轉譯）、BeamNG.Earth 1.9.1-beta 世界伺服器 | 主機層（本資料夾的腳本），**不用 Docker** |
 | **B 車機台** | 手機 USB 接這台 | `codriver-llm`（vLLM，本機 LLM）、`codriver-bridge`（OutGauge → 手機） | repo 根目錄的 `docker-compose.yml` |
 | **C 台** | AI 看板／展示影片／備援 | 之後的 `codriver-monitor`；需要時當 A 或 B 的備援 | — |
 
@@ -56,13 +56,14 @@ A：BeamNG ──OutGauge UDP（車速、油量）──▶ B：codriver-bridge 
    - 把 `steamapps\common\BeamNG.drive`（約 53 GB）和 `steamapps\appmanifest_284160.acf` 放到 `~/snap/steam/common/.local/share/Steam/steamapps/`。
    - Windows cmd 用 `sftp`，在 sftp 裡下 `put -a -r` 可以續傳；遠端要先建立 0 byte 的同名檔案。
 4. **Steam 不自動更新 BeamNG**：在媒體庫對 BeamNG 按右鍵 → 內容 → 更新 → 「Wait until I launch the game」。
-   - 目前版本是 0.40.5，Earth 1.9.1 需要 0.40.x。
+   - Earth 1.9.1 需要 0.40.x。0.40.5 和 0.40.6.0 都實測可以用（11/27 spark-7180：Steam 直接下載 0.40.6.0，能進高雄、mod 有回應、`bng gps` 正常）。
    - 我們不從 Steam 按 Play，所以不會觸發更新。
 
 ### 2. 自動步驟
 
 ```bash
 cd ~/ChatReader
+mkdir -p ~/codriver-dgx && touch ~/codriver-dgx/local.conf   # 新機器一定要先建（可以是空的），見下面注意事項
 tools/dgx/install_host.sh
 ```
 
@@ -74,6 +75,35 @@ tools/dgx/install_host.sh
 - 安裝 CoDriver 的 BeamNG mod
 
 執行期的大檔案放在 `~/codriver-dgx/`，這個資料夾不進 git。
+
+**新機器的注意事項（11/27 換 spark-7180 時遇到）：**
+- **一定要先有 `~/codriver-dgx/local.conf`**（空的也可以）。沒有的話 `install_host.sh` 會什麼都不印就結束（結束代碼 1）：`codriver-dgx.conf` 最後一行 `[ -f local.conf ] && source ...` 回傳 1，被腳本的 `set -e` 擋下。
+- **`earthfast` 要確認是 aarch64**：Earth v1.9.1-beta 的原始碼本來就附一個 **x86-64** 的 `server/earthfast.abi3.so`，腳本看到檔案存在就不會編譯，結尾也不會印「earthfast OK（aarch64）」。遇到時：
+  ```bash
+  mv ~/codriver-dgx/BeamNG.Earth/server/earthfast.abi3.so{,.x86_64-orig}
+  tools/dgx/install_host.sh        # 重跑，會用 Rust 編 ARM 版（約 1.5 分鐘）
+  file ~/codriver-dgx/BeamNG.Earth/server/earthfast.abi3.so   # 要看到 ARM aarch64
+  ```
+- **桌面不是 `:0` 的機器**：`ls /tmp/.X11-unix/` 看到的是 `X1` 就在 `local.conf` 加 `GAME_DISPLAY=:1`（`start_codriver.sh` 預設 `:0`）。
+- **螢幕不睡眠、不鎖定**（DGX OS 預設閒置 5 分鐘關螢幕＋鎖定，插電還會自動休眠；使用者層級，不用 sudo）：
+  ```bash
+  gsettings set org.gnome.desktop.session idle-delay 0
+  gsettings set org.gnome.desktop.screensaver lock-enabled false
+  gsettings set org.gnome.desktop.screensaver idle-activation-enabled false
+  gsettings set org.gnome.desktop.screensaver ubuntu-lock-on-suspend false
+  gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
+  gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing'
+  gsettings set org.gnome.settings-daemon.plugins.power idle-dim false
+  ```
+  從 SSH 執行時前面加 `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus`。
+- **地圖和導航路線快取跟著機器**：新機器要趁有網路沿展示路線開一遍（`bng auto on`；到加油站後 `bng place 楠都加油站` → `bng gps 楠梓車站麥當勞` → `bng face` → `bng auto on`）。11/27 開完是 `~/.cache/beamng-earth/` 3.6 GB、`codriver-routes/` 2 條（715.6 公尺、671.9 公尺）。
+- **A、B 台用網路線直連**（不設 gateway，上網繼續走 Wi‑Fi；網卡名稱用 `nmcli dev` 查，spark-7180 是 `enP7s7`）：
+  ```bash
+  # A 台（B 台一樣，位址改 10.10.0.2/24）
+  sudo nmcli con add type ethernet ifname enP7s7 con-name codriver-link ipv4.method manual ipv4.addresses 10.10.0.1/24 ipv4.never-default yes ipv6.method disabled connection.autoconnect yes
+  sudo nmcli con up codriver-link
+  ```
+  A 台 `local.conf` 寫 `RELAY_TO=10.10.0.2`；B 台 `sudo ufw allow from 10.10.0.1 to any port 4444:4445 proto udp comment 'CoDriver A'`。
 
 ---
 
