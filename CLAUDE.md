@@ -35,7 +35,7 @@ tools/beamng/beamng_bridge.py（Python，只用標準函式庫）
 
 ## 3. 這次的任務：搬到 DGX Spark（這台）
 
-- 這台：NVIDIA DGX Spark，主機 spark-6f5b，IP 192.168.50.17，使用者 nkust（有 sudo），DGX OS（Ubuntu 24.04 **arm64**），GPU GB10，驅動 580.178.04，CUDA 13.0，Docker 29.6.2。
+- （11/15 原本寫的「這台」，**11/27 起 A 台已換成 spark-7180，見第 5 節**）：NVIDIA DGX Spark，主機 spark-6f5b，IP 192.168.50.17，使用者 nkust（有 sudo），DGX OS（Ubuntu 24.04 **arm64**），GPU GB10，驅動 580.178.04，CUDA 13.0，Docker 29.6.2。
 - 使用者從 Windows 筆電用 VS Code Remote-SSH 連進來。
 
 ### 記者會時程（Nvidia Lab DGX Spark）
@@ -75,3 +75,30 @@ BeamNG 在 ARM CPU 上要轉譯，而塞車場景（15 台 AI 交通車）本來
 - Messenger 送出一定要使用者確認（程式只能按說明文字完全等於「傳送」的按鈕，永遠不碰「發送👍」）。
 - Android App 的編譯在使用者的 Windows 筆電（Android Studio，Build Variant `driveDebug`）；DGX 上不用編 Android。
 - 互動式安裝腳本在 Claude Code 裡可能卡住，盡量用非互動參數（例如 Sunshine 腳本的 `NONINTERACTIVE=1 ... ./install.sh -y`），或請使用者在終端機自己輸入。
+
+## 5. 2026-11-27 展示當天現場狀態（最新，以這節為準）
+
+### 機器
+| 角色 | 主機 | 位址 | 備註 |
+| --- | --- | --- | --- |
+| A 遊戲台 | **spark-7180**（取代開不了機的 #1 spark-6f5b） | 網路線 enP7s7 **10.10.0.1/24**（nmcli 連線名 `codriver-link`，不設 gateway）；上網走會場 Wi‑Fi wlP9s9 | 桌面是 **DISPLAY :1**（Xorg，Xauthority 在 /run/user/1000/gdm/）；沒有 VS Code，Claude Code 跑在桌面的 GNOME 終端機 |
+| B 車機＋AI 台 | nkust-dgx50 | 網路線 enP7s7 **10.10.0.2/24**（`codriver-link`） | docker compose：codriver-llm（Qwen3.6-35B-A3B-FP8）、codriver-bridge；手機 R5CY21RP81B 接 USB |
+
+- A 台 `~/codriver-dgx/local.conf`：`GAME_DISPLAY=:1`、`RELAY_TO=10.10.0.2`
+- A 台 → B 台 SSH 金鑰已設好（`ssh -o BatchMode=yes nkust@10.10.0.2` 可用），`codriver_check.sh` 會連 B 台一起檢查；11/27 20:45 A＋B 全部 ✅
+- A 台 git 只在 repo 設了 user.name/email（zevlu）；**沒有 GitHub 登入資料**，push 要使用者自己輸入 Personal Access Token
+
+### A 台安裝時踩到的坑（已寫進 tools/dgx/README.md「新機器的注意事項」）
+1. BeamNG 是 Steam 直接下載的 **0.40.6.0**（不是 0.40.5），實測跟 Earth 1.9.1-beta 相容
+2. 沒有 `~/codriver-dgx/local.conf` 時 `install_host.sh` 會無聲結束（`set -e`）→ 先 touch
+3. Earth v1.9.1-beta 原始碼附的是 **x86-64 的 earthfast.abi3.so** → 改名成 `.x86_64-orig` 後重跑腳本編 ARM 版
+4. `start_codriver.sh` 原本寫死 DISPLAY=:0 → 改成 `${GAME_DISPLAY:-:0}`（commit 1ca2035）
+5. 螢幕不睡眠／不鎖定：已用 gsettings 關掉（DGX OS 預設 5 分鐘關螢幕＋鎖定＋自動休眠）
+6. 快取重建：`~/.cache/beamng-earth/` 3.6 GB，`codriver-routes/` 2 條（起點→加油站 715.6 m、加油站→麥當勞 671.9 m）
+
+### 還沒解決／要注意
+- **回起點的繞路路線**：Ctrl+Alt+2 後車頭方向隨機，朝西時 OSRM 給 990 m 繞一圈的路線，而且**會蓋掉 715 m 的快取**（同起終點同檔名）。目前對策：路線看起來在起點往西北繞，就再按一次 Ctrl+Alt+2；或車頭轉好後再 `bng gps 楠都加油站`。根治要改 `codriver_routecache.py`（不要用較長路線蓋掉短的），使用者還沒決定要不要改。
+- **GPS 指令 B→A 曾整輪沒送到（原因未找到）**：20:48 那輪，B 台橋接有送兩段 GPS（目標 10.10.0.1:40672 正確），A 台 `relay.log` 卻沒有任何「🧭 轉回遊戲」，到加油站就沒導航。之後從 B 台手動送測試封包、以及 20:58 那輪都正常（兩段都到）。A 台 ufw 是關的；B→A 網路測試正常。再發生時：先 `tools/dgx/bng gps 楠梓車站麥當勞` 救場，再看 `grep 轉回遊戲 ~/codriver-dgx/logs/relay.log | tail` 和 B 台 `docker logs -t --tail 1500 codriver-bridge | grep -a -E "🧭|🏁|📍"`，必要時請使用者 `sudo tcpdump -ni enP7s7 'udp and src host 10.10.0.2'` 抓封包。
+- 查 B 台橋接 log 用 `docker logs -t --tail N codriver-bridge`（log 有 30 多萬行，不加 --tail 從頭 grep 經 SSH 會不完整）；`docker compose logs --since` 也抓不到東西。
+- 轉送程式的 `pgrep -f codriver_relay.py` 會比對到下指令的那個 shell 自己 → 判斷有沒有在跑請用 `ss -uanp | grep 4445`。
+
