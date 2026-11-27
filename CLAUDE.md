@@ -56,6 +56,13 @@ tools/dgx/codriver_check.sh      # 健康檢查（A＋B），結束代碼 = ❌ 
 tools/dgx/bng                    # 遊戲操作指令一覽（gps、place、face、auto、traffic、jam、start…）
 tools/dgx/switch_mode.sh single|dual   # 單機備案（A 台自己跑 LLM＋橋接）
 ```
+### 關機／開機順序（11/27 整理）
+- **關機：先 A 後 B，手機最後拔。**
+  1. A 台：`tools/dgx/stop_codriver.sh`（關遊戲、世界伺服器、轉送；不要用 Steam 的 STOP）→ `snap run steam -shutdown`（等約 10 秒）→ 桌面右上角電源選單關機（或 `systemctl poweroff`）
+  2. B 台：手機 App 關掉、拔 USB → **直接關機**（`ssh nkust@10.10.0.2` 後 `sudo poweroff`，或 B 台桌面電源選單）。不用先 `docker compose stop`：兩個容器是 `restart: unless-stopped`，直接關機下次開機會自動起來；先手動 stop 的話下次要自己 `docker compose up -d`
+- 不用另外處理：`codriver-link` 網路設定、`local.conf`、快取、螢幕不睡眠設定都會保留
+- **開機：先 B 後 A。** B 台開機等 LLM 就緒（約 3.5～5 分鐘）→ A 台 `tools/dgx/start_codriver.sh`（有 RELAY_TO 會自動開轉送）→ 手機插 B 台 → `tools/dgx/codriver_check.sh` 全部 ✅
+
 遊戲已開著時手動開轉送：`setsid -f python3 -u tools/dgx/codriver_relay.py --to 10.10.0.2 --port 4444 > ~/codriver-dgx/logs/relay.log 2>&1 < /dev/null`，再 `tools/dgx/bng outgauge 127.0.0.1 4444`。
 
 ## 4. 規則（一定要遵守）
